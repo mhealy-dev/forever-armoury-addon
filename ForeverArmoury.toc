@@ -1,0 +1,15 @@
+## Interface: 16001
+## Title: Forever Armoury
+## Notes: Your Forever Armoury talent builds in the game: paste them in, pick one, and see your next talent.
+## Author: Forever Armoury
+## Version: 0.1.0
+## SavedVariables: ForeverArmouryDB
+## SavedVariablesPerCharacter: ForeverArmouryCharDB
+## X-Website: https://foreverarmoury.app
+## X-Category: Class
+
+ForeverArmoury.lua
+BuildCode.lua
+Talents.lua
+Builds.lua
+TalentUI.lua
