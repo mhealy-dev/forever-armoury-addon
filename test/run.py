@@ -51,7 +51,39 @@ for t, tab in ipairs(TREE) do for i, x in ipairs(tab) do
   NODES[id] = { tab = t, talent = x, posX = (t - 1) * 4000 + (x[3] - 1) * 600 + 300, posY = 1500 + (x[2] - 1) * 600 }
   DEFS[id] = { spellID = id * 10, overrideName = nil }
 end end
-C_ClassTalents = { GetActiveConfigID = function() if API ~= "traits" then return nil end return 7 end }
+-- Config 7 is the active spec: its committed ranks are TREE's, and STAGED holds what's bought but not applied. Config 8
+-- is the other spec (dual spec), its ranks in OTHER. A rank can be bought with a point to spend, below the talent's
+-- max, and with (tier - 1) * 5 points already in its tree, as the game's trees gate them.
+STAGED, OTHER, LOG = {}, {}, {}
+SPEC = { active = 1, groups = 1 }
+COMBAT, FAIL_COMMIT = false, false
+local function rankOf(configID, nodeID)
+  if configID == 8 then return OTHER[nodeID] or 0 end
+  return NODES[nodeID].talent[4] + (STAGED[nodeID] or 0)
+end
+local function spentIn(configID, tab)
+  local s = 0
+  for id, n in pairs(NODES) do if not tab or n.tab == tab then s = s + rankOf(configID, id) end end
+  return s
+end
+function UNSPENT() return math.max(0, PLAYER.level - 9) - spentIn(7) end
+C_ClassTalents = {
+  GetActiveConfigID = function() if API ~= "traits" then return nil end return SPEC.active == 1 and 7 or 8 end,
+  CommitConfig = function(saved)
+    LOG[#LOG + 1] = "commit"
+    if FAIL_COMMIT then return false end
+    for id, n in pairs(STAGED) do NODES[id].talent[4] = NODES[id].talent[4] + n end
+    STAGED = {}
+    return true
+  end,
+  CanChangeTalents = function() return true, true, "" end,
+}
+C_SpecializationInfo = {
+  GetActiveSpecGroup = function() return SPEC.active end,
+  GetCombatConfigIDForSpecGroup = function(g) return g == 1 and 7 or 8 end,
+}
+function GetNumSpecGroups() return SPEC.groups end
+function InCombatLockdown() return COMBAT end
 C_Traits = {
   GetConfigInfo = function(configID) return { ID = configID, treeIDs = { 55 }, name = "Primary" } end,
   GetGroupDisplayInfoByTreeID = function(treeID)
@@ -60,10 +92,20 @@ C_Traits = {
   GetTreeNodes = function(treeID) local ids = {} for k in pairs(NODES) do ids[#ids + 1] = k end table.sort(ids) return ids end,
   GetNodeInfo = function(configID, nodeID)
     local n = NODES[nodeID]
-    return { ID = nodeID, posX = n.posX, posY = n.posY, groupIDs = { n.tab * 10 }, entryIDs = { nodeID * 2 }, ranksPurchased = n.talent[4], maxRanks = n.talent[5], activeRank = n.talent[4] }
+    return { ID = nodeID, posX = n.posX, posY = n.posY, groupIDs = { n.tab * 10 }, entryIDs = { nodeID * 2 }, ranksPurchased = rankOf(configID, nodeID), maxRanks = n.talent[5] }
   end,
   GetEntryInfo = function(configID, entryID) return { definitionID = entryID / 2, maxRanks = NODES[entryID / 2].talent[5] } end,
   GetDefinitionInfo = function(defID) return DEFS[defID] end,
+  GetTreeCurrencyInfo = function(configID, treeID, excludeStaged) return { { traitCurrencyID = 1, quantity = UNSPENT(), spent = spentIn(7) } } end,
+  ConfigHasStagedChanges = function(configID) return next(STAGED) ~= nil end,
+  PurchaseRank = function(configID, nodeID)
+    local n = NODES[nodeID]
+    local ok = configID == 7 and UNSPENT() > 0 and rankOf(7, nodeID) < n.talent[5] and spentIn(7, n.tab) >= (n.talent[2] - 1) * 5
+    LOG[#LOG + 1] = (ok and "buy " or "refused ") .. n.talent[1]
+    if ok then STAGED[nodeID] = (STAGED[nodeID] or 0) + 1 end
+    return ok
+  end,
+  RollbackConfig = function(configID) LOG[#LOG + 1] = "rollback"; STAGED = {} end,
 }
 C_Spell = { GetSpellName = function(spellID) return NODES[spellID / 10].talent[1] end, GetSpellTexture = function(spellID) return spellID end }
 
@@ -89,7 +131,11 @@ function RESET(api)
   API = api or "traits"
   ForeverArmouryDB, ForeverArmouryCharDB = nil, nil; FA.Init(); FA.Talents.Forget(); PLAYER.level = 60
   for _, tab in ipairs(TREE) do for _, t in ipairs(tab) do t[4] = 0 end end
+  STAGED, OTHER, LOG = {}, {}, {}
+  SPEC.active, SPEC.groups, COMBAT, FAIL_COMMIT = 1, 1, false, false
 end
+-- a node's id by tree and talent index, for setting OTHER
+function NODE(tab, index) for id, n in pairs(NODES) do if n.tab == tab and n.talent == TREE[tab][index] then return id end end end
 """
 
 
@@ -275,6 +321,233 @@ class Builds(unittest.TestCase):
         p, why = L.eval("function() local p, why = FA.Progress({ picks = '00' }); return p, why end")()
         self.assertIsNone(p)
         self.assertIn("isn't in your talent trees", why)
+
+    def test_extra_names_the_points_the_build_lacks(self):
+        L.run("TREE[1][1][4] = 1; TREE[3][1][4] = 2; FA.Talents.Forget()")
+        extra = L.eval("function() local p = FA.Progress({ picks = '010101' }); local out = {} for i, x in ipairs(p.extra) do out[i] = x.talent.name .. ' ' .. x.over end return table.concat(out, ', ') end")()
+        self.assertEqual(extra, "Shield Specialization 2")
+
+
+# A warrior build that respects the tiers: five in Deflection, then Tactical Mastery (tier 2), then Sweeping Strikes
+# (tier 3, needs 10 in Arms), then Cruelty.
+GATED = "0101010101" + "0404040404" + "0b" + "1212"
+
+
+class Apply(unittest.TestCase):
+    def setUp(self):
+        L.run("RESET('traits')")
+
+    def plan(self, picks):
+        return L.eval("function(picks) local list, why = FA.PlanApply({ picks = picks }); if not list then return nil, why end "
+                      "local out = {} for i, t in ipairs(list) do out[i] = t.name end return table.concat(out, ','), nil end")(picks)
+
+    def apply(self, picks):
+        return L.eval("function(picks) return FA.Apply({ picks = picks }) end")(picks)
+
+    def log(self):
+        return list(L.eval("LOG").values())
+
+    def test_plan_takes_as_many_points_as_are_unspent(self):
+        L.run("PLAYER.level = 12")   # three points
+        names, why = self.plan(GATED)
+        self.assertEqual(names, "Deflection,Deflection,Deflection")
+        L.run("PLAYER.level = 60")
+        names, _ = self.plan(GATED)
+        self.assertEqual(names.split(","), ["Deflection"] * 5 + ["Tactical Mastery"] * 5 + ["Sweeping Strikes", "Cruelty", "Cruelty"])
+
+    def test_apply_spends_in_order_and_commits_once(self):
+        L.run("PLAYER.level = 22")   # thirteen points: the whole build
+        ok, said = self.apply(GATED)
+        self.assertTrue(ok, said)
+        self.assertEqual(said, "Deflection x5, Tactical Mastery x5, Sweeping Strikes, Cruelty x2")
+        self.assertEqual(self.log()[-1], "commit")
+        self.assertEqual(self.log().count("commit"), 1)
+        self.assertEqual(L.eval("FA.Talents.Spent()"), 13)
+        self.assertEqual(L.eval("UNSPENT()"), 0)
+        ok, why = self.apply(GATED)
+        self.assertFalse(ok)
+        self.assertIn("Every point of this build is spent", why)
+
+    def test_apply_continues_a_build_part_spent(self):
+        L.run("PLAYER.level = 14; TREE[1][1][4] = 3; FA.Talents.Forget()")   # five points, three spent as the build says
+        names, _ = self.plan(GATED)
+        self.assertEqual(names, "Deflection,Deflection")
+        ok, _ = self.apply(GATED)
+        self.assertTrue(ok)
+        self.assertEqual(L.eval("TREE[1][1][4]"), 5)
+
+    def test_a_point_the_game_refuses_spends_nothing(self):
+        # Sweeping Strikes before ten points in Arms: the game refuses it, and the points before it are rolled back
+        ok, why = self.apply("0101" + "0b")
+        self.assertFalse(ok)
+        self.assertIn("point 3 (Sweeping Strikes)", why)
+        self.assertEqual(self.log()[-1], "rollback")
+        self.assertNotIn("commit", self.log())
+        self.assertEqual(L.eval("FA.Talents.Spent()"), 0)
+
+    def test_a_failed_commit_spends_nothing(self):
+        L.run("FAIL_COMMIT = true")
+        ok, why = self.apply(GATED)
+        self.assertFalse(ok)
+        self.assertIn("wouldn't apply", why)
+        self.assertEqual(self.log()[-1], "rollback")
+        self.assertEqual(L.eval("FA.Talents.Spent()"), 0)
+
+    def test_apply_refuses_points_off_the_build(self):
+        L.run("TREE[3][1][4] = 2; FA.Talents.Forget()")
+        names, why = self.plan(GATED)
+        self.assertIsNone(names)
+        self.assertIn("2 points this build doesn't", why)
+
+    def test_apply_waits_for_a_level_with_a_point(self):
+        L.run("PLAYER.level = 10; TREE[1][1][4] = 1; FA.Talents.Forget()")
+        names, why = self.plan(GATED)
+        self.assertIsNone(names)
+        self.assertEqual(why, "Your next point comes at level 11.")
+
+    def test_apply_refuses_in_combat_and_over_staged_changes(self):
+        L.run("COMBAT = true")
+        ok, why = self.apply(GATED)
+        self.assertFalse(ok)
+        self.assertIn("combat", why)
+        L.run("COMBAT = false; STAGED[NODE(2, 1)] = 1")
+        ok, why = self.apply(GATED)
+        self.assertFalse(ok)
+        self.assertIn("changes waiting", why)
+
+    def test_summary_groups_and_cuts(self):
+        summary = L.eval("function(picks, limit) local list = FA.PlanApply({ picks = picks }); return FA.Summary(list, limit) end")
+        self.assertEqual(summary(GATED, None), "Deflection x5, Tactical Mastery x5, Sweeping Strikes, Cruelty x2")
+        self.assertEqual(summary(GATED, 2), "Deflection x5, Tactical Mastery x5, and 2 more")
+
+
+class Swap(unittest.TestCase):
+    def setUp(self):
+        L.run("RESET('traits')")
+
+    def advice(self, picks):
+        return L.eval("function(picks) return FA.SwapAdvice({ picks = picks }) end")(picks)
+
+    def test_no_advice_when_the_points_fit(self):
+        L.run("TREE[1][1][4] = 2; FA.Talents.Forget()")
+        self.assertIsNone(self.advice(GATED))
+
+    def test_a_reset_without_dual_spec(self):
+        L.run("TREE[3][1][4] = 2; FA.Talents.Forget()")
+        self.assertEqual(self.advice(GATED), "Reset your talents at a class trainer, then Apply spends every point in order.")
+
+    def test_the_other_spec_when_it_fits(self):
+        L.run("TREE[3][1][4] = 2; SPEC.groups = 2; OTHER[NODE(1, 1)] = 3; FA.Talents.Forget()")
+        self.assertEqual(self.advice(GATED), "Your Secondary spec fits this build: activate it in the talent window, then Apply.")
+        L.run("OTHER[NODE(2, 1)] = 1; FA.Talents.Forget()")   # the other spec has a point off the build too
+        self.assertIn("Reset your talents", self.advice(GATED))
+
+    def test_the_other_spec_is_read_from_its_own_config(self):
+        L.run("SPEC.groups = 2; OTHER[NODE(1, 1)] = 4; FA.Talents.Forget()")
+        view_spent = L.eval("function() local v, n = FA.Talents.OtherSpec(); return FA.Talents.Spent(v), n end")()
+        self.assertEqual(tuple(view_spent), (4, 2))
+        self.assertEqual(L.eval("FA.Talents.Spent()"), 0)
+
+
+UI_STUB = r"""
+-- Any frame: every method answers a new frame, except the few whose answers get used as numbers, text or flags.
+local ANSWERS = { GetFrameLevel = 1, IsShown = true, GetWidth = 400, GetText = "", GetChecked = true, GetID = 1 }
+SHOWN, POPUPS, HOOKS = {}, {}, {}
+local function frame(name)
+  local f = { name = name }
+  return setmetatable(f, { __index = function(t, k)
+    if ANSWERS[k] ~= nil then return function() return ANSWERS[k] end end
+    if k == "SetText" then return function(self, text) rawset(self, "text", text) end end
+    if k == "Enable" then return function(self) rawset(self, "enabled", true) end end
+    if k == "Disable" then return function(self) rawset(self, "enabled", false) end end
+    if k == "Show" then return function(self) rawset(self, "shown", true) end end
+    if k == "Hide" then return function(self) rawset(self, "shown", false) end end
+    if k == "HookScript" then return function(self, event, fn) HOOKS[#HOOKS + 1] = fn end end
+    return function() return frame() end
+  end })
+end
+CreateFrame = function(kind, name) local f = frame(name); if name then _G[name] = f end return f end
+UIParent, GameTooltip, ChatFontNormal = frame("UIParent"), frame("GameTooltip"), frame()
+UISpecialFrames = {}
+tinsert = table.insert
+hooksecurefunc = function(a, b, c) HOOKS[#HOOKS + 1] = c or b end
+StaticPopup_Show = function(which, text, _, data) POPUPS[#POPUPS + 1] = { which = which, text = text, data = data } end
+PlayerSpellsFrame = frame("PlayerSpellsFrame")
+PlayerSpellsFrame.TalentsFrame = frame("TalentsFrame")
+PlayerSpellsFrame.TalentsFrame.GetTalentButtonByNodeID = function(self, nodeID) LIT = nodeID; return frame() end
+Settings = { RegisterCanvasLayoutCategory = function() return frame() end, RegisterAddOnCategory = function() end, OpenToCategory = function() end }
+"""
+
+
+class UI(unittest.TestCase):
+    """TalentUI.lua run against a mock of the frame API: every path draws without a Lua error."""
+
+    @classmethod
+    def setUpClass(cls):
+        L.run("RESET('traits')")
+        L.run(UI_STUB)
+        L.run("""
+          local f = assert(io.open(ROOT .. '/TalentUI.lua', 'rb')); local src = f:read('*a'); f:close()
+          assert((loadstring or load)(src, '@TalentUI.lua'))('ForeverArmoury', FA)
+        """)
+        L.run("FA.HookTalentFrame(); FA.SetupOptions()")
+
+    def setUp(self):
+        L.run("RESET('traits'); POPUPS = {}; LIT = nil")
+
+    def panel(self, key):
+        return L.eval("function(k) local p = ForeverArmouryTalentPanel; if k == 'status' then return p.status.text end "
+                      "if k == 'apply' then return p.apply.text, p.apply.enabled, p.apply.why end end")(key)
+
+    def test_no_builds(self):
+        L.run("FA.Refresh()")
+        self.assertIn("No builds for this class yet", self.panel("status"))
+        self.assertEqual(self.panel("apply")[1], False)
+
+    def test_import_follow_light_and_apply(self):
+        ok, said = L.eval("function(t) return FA.ImportText(t) end")("FAT1-warrior-Arms-" + GATED)
+        self.assertTrue(ok)
+        self.assertIn("1 Warrior build imported. Following Arms.", said)
+        L.run("PLAYER.level = 12; FA.Talents.Forget(); FA.Refresh()")
+        self.assertIn("Next: |cffffd100Deflection|r 1/5 (Arms), now.", self.panel("status"))
+        self.assertEqual(L.eval("LIT"), L.eval("NODE(1, 1)"))
+        text, enabled, why = self.panel("apply")
+        self.assertEqual((text, enabled, why), ("Apply 3 points", True, "Deflection x3"))
+        L.run("FA.AskApply()")
+        popup = L.eval("POPUPS[1]")
+        self.assertEqual(popup.which, "FOREVERARMOURY_APPLY")
+        self.assertIn("Spend 3 points as Arms says?", popup.text)
+        L.run("StaticPopupDialogs.FOREVERARMOURY_APPLY.OnAccept(nil, POPUPS[1].data)")
+        self.assertEqual(L.eval("FA.Talents.Spent()"), 3)
+        self.assertIn("Spent as Arms says: Deflection x3.", L.eval("PRINTED"))
+        L.run("FA.Refresh()")
+        text, enabled, why = self.panel("apply")
+        self.assertEqual((text, enabled), ("Apply", False))
+        self.assertEqual(why, "Your next point comes at level 13.")
+
+    def test_off_build_points_show_the_swap(self):
+        L.run("FA.ImportText('FAT1-warrior-Arms-" + GATED + "'); TREE[3][1][4] = 2; FA.Talents.Forget(); FA.Refresh()")
+        status = self.panel("status")
+        self.assertIn("2 points aren't in this build|r (Shield Specialization x2).", status)
+        self.assertIn("Reset your talents at a class trainer", status)
+        self.assertEqual(self.panel("apply")[1], False)
+
+    def test_import_errors_and_export(self):
+        ok, err = L.eval("function(t) return FA.ImportText(t) end")("nonsense")
+        self.assertFalse(ok)
+        self.assertIn("isn't a build code", err)
+        L.run("FA.ImportText('FAT1-warrior-Arms-0101.mage-Frost-0a'); FA.OpenImport(FA.ExportCode())")
+        self.assertEqual(L.eval("ForeverArmouryImportText.text"), "FAT1-warrior-Arms-0101")
+
+    def test_the_part_switch_hides_the_panel(self):
+        L.run("FA.SetPart('plan', false)")
+        self.assertFalse(L.eval("ForeverArmouryTalentPanel.shown"))
+        L.run("FA.SetPart('plan', true)")
+        self.assertTrue(L.eval("ForeverArmouryTalentPanel.shown"))
+
+    def test_slash_commands_run(self):
+        for cmd in ["", "help", "list", "export", "import", "apply", "plan off", "plan on", "options", "debug"]:
+            L.eval("function(c) SlashCmdList.FOREVERARMOURY(c) end")(cmd)
 
 
 if __name__ == "__main__":

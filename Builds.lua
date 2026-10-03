@@ -1,4 +1,4 @@
---[[ The saved builds, the character's active one, and where the character is on it.
+--[[ The saved builds, the character's active one, where the character is on it, and what Apply and Swap do.
 
      FA.db.builds[class] is a list of { id, name, picks }: every build imported on this account, by class, and
      FA.char.build is the id of the one this character follows. A build's points name a tree and a cell; Talents.lua
@@ -59,28 +59,101 @@ function FA.ExportCode()
   return FA.Code.Write(out)
 end
 
---[[ Where the character is on a build. Answers a table, or nil and why:
-       next     the first point of the build the character hasn't taken: { n, talent, rank, level }, talent being
-                Talents.At's, rank the rank that point makes and level the level the build takes it at; nil once
-                every point is taken
+--[[ Where a spec is on a build (the active spec without a view). Answers a table, or nil and why:
+       next     the first point of the build not taken: { n, talent, rank, level }, talent being Talents.At's, rank the
+                rank that point makes and level the level the build takes it at; nil once every point is taken
+       left     every point not taken, in the build's order, each as next is
+       extra    the talents with more ranks than the build gives them: { { talent, over }, ... }
        points   how many points the build has
-       spent    how many points the character has spent
+       spent    how many points the spec has spent
        off      how many of those the build doesn't have (so the build can't be followed without a reset)
        due      how many of the build's points the character's level allows ]]
-function FA.Progress(build)
+function FA.Progress(build, view)
   local points = FA.Code.Points(build.picks)
   if not points then return nil, "That build's code doesn't read." end
-  if not FA.Talents.Ready() then return nil, "The game hasn't given its talents yet. Open the talent window and try again." end
-  local planned, taken, nextPick = {}, 0, nil
+  view = view or FA.Talents.View()
+  if not view then return nil, "The game hasn't given its talents yet. Open the talent window and try again." end
+  local planned, byKey, taken, left = {}, {}, 0, {}
   for n, p in ipairs(points) do
-    local t = FA.Talents.At(p.tab, p.cell)
+    local t = FA.Talents.At(p.tab, p.cell, view)
     if not t then return nil, "A talent in this build isn't in your talent trees. The site may be newer than this addon." end
     local key = p.tab * 100 + p.cell
     planned[key] = (planned[key] or 0) + 1
+    byKey[key] = t
     if planned[key] <= t.rank then taken = taken + 1
-    elseif not nextPick then nextPick = { n = n, talent = t, rank = planned[key], level = n + FA.FIRST_LEVEL - 1 } end
+    else left[#left + 1] = { n = n, talent = t, rank = planned[key], level = n + FA.FIRST_LEVEL - 1 } end
   end
-  local spent = FA.Talents.Spent()
+  local extra = {}
+  for tab, cells in pairs(view.cells) do
+    for cell, t in pairs(cells) do
+      local over = t.rank - (planned[tab * 100 + cell] or 0)
+      if over > 0 then extra[#extra + 1] = { talent = t, over = over } end
+    end
+  end
+  table.sort(extra, function(a, b) return a.talent.tab * 100 + a.talent.cell < b.talent.tab * 100 + b.talent.cell end)
+  local spent = FA.Talents.Spent(view)
   local level = UnitLevel("player") or 1
-  return { next = nextPick, points = #points, spent = spent, off = spent - taken, due = math.max(0, math.min(#points, level - FA.FIRST_LEVEL + 1)) }
+  return { next = left[1], left = left, extra = extra, points = #points, spent = spent, off = spent - taken,
+    due = math.max(0, math.min(#points, level - FA.FIRST_LEVEL + 1)) }
+end
+
+--[[ What Apply would spend now: the build's points not taken, in order, as many as the character has unspent.
+     Answers the list of talents and the progress, or nil and why. ]]
+function FA.PlanApply(build)
+  if FA.Talents.HasStaged() then return nil, FA.Talents.STAGED end
+  local p, why = FA.Progress(build)
+  if not p then return nil, why end
+  if p.off > 0 then return nil, "You have " .. p.off .. (p.off == 1 and " point" or " points") .. " this build doesn't, so Apply can't follow it." end
+  if not p.next then return nil, "Every point of this build is spent." end
+  local unspent = FA.Talents.Unspent()
+  if unspent == nil then unspent = math.max(0, p.due - p.spent) end
+  if unspent <= 0 then
+    return nil, p.next.level > (UnitLevel("player") or 1) and ("Your next point comes at level " .. p.next.level .. ".") or "You have no points to spend."
+  end
+  local list = {}
+  for i = 1, math.min(unspent, #p.left) do list[i] = p.left[i].talent end
+  return list, nil, p
+end
+
+--[[ The talents of a list as a short line: "Deflection x3, Cruelty", in the order they come. ]]
+function FA.Summary(list, limit)
+  local order, count = {}, {}
+  for _, t in ipairs(list) do
+    local key = t.tab * 100 + t.cell
+    if not count[key] then order[#order + 1] = t; count[key] = 0 end
+    count[key] = count[key] + 1
+  end
+  local parts = {}
+  for i, t in ipairs(order) do
+    if limit and i > limit then parts[#parts + 1] = "and " .. (#order - limit) .. " more"; break end
+    parts[#parts + 1] = (t.name or "?") .. (count[t.tab * 100 + t.cell] > 1 and (" x" .. count[t.tab * 100 + t.cell]) or "")
+  end
+  return table.concat(parts, ", ")
+end
+
+--[[ Spends the points PlanApply chose, all or none. Answers true and what was spent, or false and why. ]]
+function FA.Apply(build)
+  local ok, why = FA.Talents.CanChange()
+  if not ok then return false, why end
+  local list
+  list, why = FA.PlanApply(build)
+  if not list then return false, why end
+  ok, why = FA.Talents.Learn(list)
+  if not ok then return false, why end
+  return true, FA.Summary(list)
+end
+
+--[[ What it takes to follow a build the active spec's points don't fit (Swap). Answers a sentence, or nil when the
+     points fit and Apply continues it. ]]
+function FA.SwapAdvice(build)
+  local p = FA.Progress(build)
+  if not p or p.off <= 0 then return nil end
+  local other, n = FA.Talents.OtherSpec()
+  if other then
+    local q = FA.Progress(build, other)
+    if q and q.off <= 0 then
+      return "Your " .. FA.Talents.SpecName(n) .. " spec fits this build: activate it in the talent window, then Apply."
+    end
+  end
+  return "Reset your talents at a class trainer, then Apply spends every point in order."
 end

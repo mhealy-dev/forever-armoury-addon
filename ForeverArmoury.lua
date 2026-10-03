@@ -54,6 +54,7 @@ end
 local HELP = {
   "/fa  the talent window with your builds beside it",
   "/fa import  paste a build code from the site",
+  "/fa apply  spend your unspent points as the build you follow says",
   "/fa export  the code for every build of your class, to paste into the site",
   "/fa list  your builds for this class",
   "/fa plan on|off  the level plan part",
@@ -69,6 +70,8 @@ SlashCmdList.FOREVERARMOURY = function(msg)
     if FA.ToggleTalents then FA.ToggleTalents() end
   elseif cmd == "import" then
     if FA.OpenImport then FA.OpenImport() end
+  elseif cmd == "apply" then
+    if FA.AskApply then FA.AskApply() end
   elseif cmd == "export" then
     local code = FA.ExportCode and FA.ExportCode()
     if not code then FA.Print("No builds for this class yet. /fa import to paste some in.")
@@ -105,9 +108,25 @@ events:SetScript("OnEvent", function(_, event, arg1)
   elseif event == "PLAYER_LOGIN" then
     FA.class = (select(2, UnitClass("player")) or ""):lower()   -- "warrior", as the site names it
     for _, e in ipairs({ "PLAYER_LEVEL_UP", "PLAYER_TALENT_UPDATE", "TRAIT_NODE_CHANGED", "TRAIT_CONFIG_UPDATED",
-      "ACTIVE_TALENT_GROUP_CHANGED", "CHARACTER_POINTS_CHANGED" }) do pcall(events.RegisterEvent, events, e) end
+      "ACTIVE_TALENT_GROUP_CHANGED", "CHARACTER_POINTS_CHANGED", "CONFIG_COMMIT_FAILED", "CONFIRM_TALENT_WIPE" }) do
+      pcall(events.RegisterEvent, events, e)
+    end
     if FA.HookTalentFrame then FA.HookTalentFrame() end
     if FA.SetupOptions then FA.SetupOptions() end
+  elseif event == "CONFIG_COMMIT_FAILED" then
+    FA.Print("The game didn't apply the talents. Nothing was spent.")
+    FA.Talents.Forget()
+    if FA.Refresh then FA.Refresh() end
+  elseif event == "CONFIRM_TALENT_WIPE" then
+    --[[ At a trainer's reset, before it's confirmed: what Apply does after it. The reset itself, and its cost, stay
+         the game's own dialog. ]]
+    local build = FA.PartOn("plan") and FA.ActiveBuild()
+    local points = build and FA.Code.Points(build.picks)
+    if points then
+      local due = math.min(#points, math.max(0, (UnitLevel("player") or 1) - FA.FIRST_LEVEL + 1))
+      FA.Print("After the reset, open your talents and press Apply: it spends " .. due .. (due == 1 and " point" or " points") .. " as " ..
+        (build.name ~= "" and build.name or "your build") .. " says.")
+    end
   else
     FA.Talents.Forget()
     if FA.Refresh then FA.Refresh() end

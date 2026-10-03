@@ -43,7 +43,7 @@ end
 local function makePanel()
   local window = Talents.Window() or UIParent
   panel = CreateFrame("Frame", "ForeverArmouryTalentPanel", window, TEMPLATE)
-  panel:SetSize(210, 380)
+  panel:SetSize(210, 410)
   if Talents.Window() then panel:SetPoint("TOPLEFT", window, "TOPRIGHT", -2, -20) else panel:SetPoint("CENTER") end
   panel:SetBackdrop(BACKDROP)
   panel:SetFrameStrata("HIGH")
@@ -58,14 +58,28 @@ local function makePanel()
   panel.status:SetPoint("TOPRIGHT", -16, -36)
   panel.status:SetJustifyH("LEFT")
   panel.status:SetJustifyV("TOP")
-  panel.status:SetHeight(56)
+  panel.status:SetHeight(66)
   panel.status:SetWordWrap(true)
+
+  panel.apply = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+  panel.apply:SetSize(178, 22)
+  panel.apply:SetPoint("TOP", 0, -104)
+  panel.apply:SetText("Apply")
+  panel.apply:SetScript("OnClick", function() FA.AskApply() end)
+  panel.apply:SetScript("OnEnter", function(self)
+    if not self.why then return end
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    GameTooltip:SetText(self.why, 1, 1, 1, 1, true)
+    GameTooltip:Show()
+  end)
+  panel.apply:SetScript("OnLeave", function() GameTooltip:Hide() end)
+  panel.apply:SetMotionScriptsWhileDisabled(true)
 
   panel.rows = {}
   for i = 1, ROWS do
     local row = CreateFrame("Button", nil, panel)
     row:SetSize(158, 20)
-    row:SetPoint("TOPLEFT", 16, -96 - (i - 1) * 21)
+    row:SetPoint("TOPLEFT", 16, -132 - (i - 1) * 21)
     row.text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     row.text:SetPoint("LEFT", 4, 0)
     row.text:SetPoint("RIGHT", -4, 0)
@@ -113,15 +127,42 @@ StaticPopupDialogs["FOREVERARMOURY_FORGET"] = {
   OnAccept = function(self, data) if data then FA.ForgetBuild(data.cls, data.id); FA.Refresh() end end,
   timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
 }
+StaticPopupDialogs["FOREVERARMOURY_APPLY"] = {
+  text = "%s", button1 = "Spend", button2 = CANCEL or "Cancel",
+  OnAccept = function(self, data)
+    local build = data and FA.FindBuild(FA.class, data.id)
+    if not build then return end
+    local ok, said = FA.Apply(build)
+    FA.Print(ok and ("Spent as " .. (build.name ~= "" and build.name or "the build") .. " says: " .. said .. ".") or said)
+    FA.Refresh()
+  end,
+  timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
+}
 
---[[ What the panel says about the active build: its next point, or why there isn't one. ]]
+--[[ Apply: one confirm naming what it spends, then the points, all or none (FA.Apply). ]]
+function FA.AskApply()
+  local build = FA.ActiveBuild()
+  if not build then FA.Print("Pick a build to follow first."); return end
+  local ok, why = FA.Talents.CanChange()
+  local list
+  if ok then list, why = FA.PlanApply(build) end
+  if not list then FA.Print(why); return end
+  StaticPopup_Show("FOREVERARMOURY_APPLY", "Spend " .. #list .. (#list == 1 and " point" or " points") .. " as " ..
+    (build.name ~= "" and build.name or "the build") .. " says?\n\n" .. FA.Summary(list, 8), nil, { id = build.id })
+end
+
+--[[ What the panel says about the active build: its next point, or why there isn't one, and what it takes to swap. ]]
 local function statusText(build)
   if not build then return "Pick a build to follow. Its next talent lights up in the trees." end
   local p, why = FA.Progress(build)
   if not p then return why end
   local lines = {}
   if p.off > 0 then
-    lines[#lines + 1] = "|cffff6060" .. p.off .. (p.off == 1 and " point isn't" or " points aren't") .. " in this build:|r reset at a trainer to follow it."
+    local names = {}
+    for i, x in ipairs(p.extra) do if i <= 3 then names[#names + 1] = (x.talent.name or "?") .. (x.over > 1 and (" x" .. x.over) or "") end end
+    lines[#lines + 1] = "|cffff6060" .. p.off .. (p.off == 1 and " point isn't" or " points aren't") .. " in this build|r (" .. table.concat(names, ", ") .. (#p.extra > 3 and ", ..." or "") .. ")."
+    lines[#lines + 1] = FA.SwapAdvice(build)
+    return table.concat(lines, "\n")
   end
   if p.next then
     local trees = Talents.Trees()
@@ -158,12 +199,21 @@ function FA.Refresh()
   end
   if #list == 0 then
     panel.status:SetText("No builds for this class yet. On the site, Copy for addon, then Import here.")
+    panel.apply:Disable(); panel.apply:SetText("Apply"); panel.apply.why = nil
     lightTalent(nil)
     return
   end
   panel.status:SetText(statusText(active))
   local p = active and FA.Progress(active)
   lightTalent(p and p.next and p.next.talent or nil)
+  --[[ Apply says how many points it would spend, or why it can't, before it's pressed. ]]
+  local plan, why
+  if active then plan, why = FA.PlanApply(active) else why = "Pick a build to follow first." end
+  if plan then
+    panel.apply:Enable(); panel.apply:SetText("Apply " .. #plan .. (#plan == 1 and " point" or " points")); panel.apply.why = FA.Summary(plan, 8)
+  else
+    panel.apply:Disable(); panel.apply:SetText("Apply"); panel.apply.why = why
+  end
 end
 
 --[[ Once Blizzard's talent UI is in: the panel on its window, and a refresh whenever it shows, hides or redraws. ]]
