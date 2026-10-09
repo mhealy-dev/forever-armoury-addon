@@ -110,6 +110,7 @@ C_Traits = {
 C_Spell = { GetSpellName = function(spellID) return NODES[spellID / 10].talent[1] end, GetSpellTexture = function(spellID) return spellID end }
 
 function UnitLevel() return PLAYER.level end
+function GetBuildInfo() return "1.60.1.70170", "70170", "Oct  2 2026", 16001 end   -- the build a code carries (#1215)
 function UnitClass() return "Warrior", PLAYER.class end
 function CreateFrame() return { RegisterEvent = function() end, SetScript = function() end } end
 SlashCmdList = {}
@@ -167,27 +168,33 @@ class BuildCode(unittest.TestCase):
 
     def test_writes_and_reads_back(self):
         write = L.eval("function(cls, name, picks) return FA.Code.Write({ { cls = cls, name = name, picks = picks } }) end")
-        self.assertEqual(write("warrior", "Arms PvP", PICKS), "FAT1-warrior-Arms%20PvP-" + PICKS)
-        self.assertEqual(write("mage", "", "0a"), "FAT1-mage--0a")
+        self.assertEqual(write("warrior", "Arms PvP", PICKS), "FAT2-70170-warrior-Arms%20PvP-" + PICKS)
+        self.assertEqual(write("mage", "", "0a"), "FAT2-70170-mage--0a")
         for name in ["Arms PvP", "", "Mage's build, 31/0/20!", "Ünïcödé 🙂 名前", "a" * 40, "50% crit", "-leading-dashes-", "dots.in.name", "  Two   words "]:
             code = write("warrior", name, PICKS)
-            self.assertRegex(code, r"^FAT1-warrior-[A-Za-z0-9%]*-[0-9a-r]+$")
+            self.assertRegex(code, r"^FAT2-70170-warrior-[A-Za-z0-9%]*-[0-9a-r]+$")
             builds, notes = self.builds(code)
             self.assertEqual(builds, [("warrior", " ".join(name.split()), PICKS)], name)
             self.assertEqual(notes, [])
 
     def test_several_builds_and_codes_in_a_text(self):
-        two = "FAT1-warrior-Arms%20PvP-" + PICKS + ".warrior-Fury-1a1a1b"
+        two = "FAT2-70170-warrior-Arms%20PvP-" + PICKS + ".warrior-Fury-1a1a1b"
         self.assertEqual(self.builds(two)[0], [("warrior", "Arms PvP", PICKS), ("warrior", "Fury", "1a1a1b")])
         for pasted in [two, "  " + two + "\n", "`" + two + "`", "here: " + two + ". Enjoy!", "<" + two + ">", "\"" + two + "\"", "**" + two + "**"]:
             self.assertEqual(len(self.builds(pasted)[0]), 2, pasted)
-        both = "FAT1-warrior-A-0a and FAT1-mage-B-1b"
+        both = "FAT2-70170-warrior-A-0a and FAT1-mage-B-1b"   # a code from before the build was written in reads too
         self.assertEqual(self.builds(both)[0], [("warrior", "A", "0a"), ("mage", "B", "1b")])
 
     def test_empty_builds(self):
-        self.assertEqual(self.builds("FAT1-warrior-Empty-.warrior-Fury-1a1a1b"), ([("warrior", "Fury", "1a1a1b")], ["Left out a build with no talent points."]))
-        self.assertEqual(self.read("FAT1-warrior-Empty-")[1], "That build has no talent points.")
-        self.assertEqual(self.read("FAT1-warrior-A-.warrior-B-")[1], "Those builds have no talent points.")
+        self.assertEqual(self.builds("FAT2-70170-warrior-Empty-.warrior-Fury-1a1a1b"), ([("warrior", "Fury", "1a1a1b")], ["Left out a build with no talent points."]))
+        self.assertEqual(self.read("FAT2-70170-warrior-Empty-")[1], "That build has no talent points.")
+        self.assertEqual(self.read("FAT2-70170-warrior-A-.warrior-B-")[1], "Those builds have no talent points.")
+
+    def test_the_build_a_code_is_from(self):
+        build = L.eval("function(t) local b = assert(FA.Code.Read(t)); return b[1].build end")
+        self.assertEqual(build("FAT2-70170-warrior-A-0a"), 70170)
+        self.assertEqual(build("FAT2-70009-warrior-A-0a"), 70009)
+        self.assertIsNone(build("FAT1-warrior-A-0a"))
 
     def test_errors(self):
         def say(text):
@@ -199,12 +206,14 @@ class BuildCode(unittest.TestCase):
         self.assertIn("isn't a build code", say("hello there"))
         self.assertIn("isn't a build code", say("FAT-warrior-Arms-0a"))
         self.assertIn("isn't a build code", say("FAT0-warrior-Arms-0a"))
-        self.assertIn("newer version", say("FAT2-warrior-Arms-0a"))
-        for bad in ["FAT1-", "FAT1-warrior", "FAT1-warrior-Arms", "FAT1-knight-Arms-0a", "FAT1-warrior-Arms-0a0", "FAT1-warrior-Arms-3a", "FAT1-warrior-Arms-0z", "FAT1-warrior-Arms-" + "0a" * 52]:
+        self.assertIn("newer version", say("FAT3-70170-warrior-Arms-0a"))
+        for bad in ["FAT2-", "FAT2-70170", "FAT2-warrior-Arms-0a", "FAT2-x-warrior-Arms-0a"]:
+            self.assertRegex(say(bad), r"doesn't read", bad)
+        for bad in ["FAT2-70170-warrior", "FAT2-70170-warrior-Arms", "FAT2-70170-knight-Arms-0a", "FAT2-70170-warrior-Arms-0a0", "FAT2-70170-warrior-Arms-3a", "FAT2-70170-warrior-Arms-0z", "FAT2-70170-warrior-Arms-" + "0a" * 52, "FAT1-", "FAT1-knight-Arms-0a"]:
             self.assertRegex(say(bad), r"Build 1 .* doesn't read", bad)
-        self.assertRegex(say("FAT1-warrior-Arms-0a.warrior-Fury"), r"Build 2 .* doesn't read")
-        self.assertRegex(say("FAT1-warrior-Arms-0a..warrior-Fury-1a"), r"Build 2")
-        for bad in ["FAT1-warrior-Ar%2-0a", "FAT1-warrior-Ar%ZZms-0a"]:
+        self.assertRegex(say("FAT2-70170-warrior-Arms-0a.warrior-Fury"), r"Build 2 .* doesn't read")
+        self.assertRegex(say("FAT2-70170-warrior-Arms-0a..warrior-Fury-1a"), r"Build 2")
+        for bad in ["FAT2-70170-warrior-Ar%2-0a", "FAT2-70170-warrior-Ar%ZZms-0a"]:
             self.assertRegex(say(bad), r"name of build 1 .* cut off", bad)
 
     def test_points(self):
@@ -273,7 +282,7 @@ class Builds(unittest.TestCase):
         # the same name again replaces the points and keeps the id
         self.assertEqual(add("FAT1-warrior-Arms-010102"), (1, 0))
         self.assertEqual(names(), "1=Arms:010102 2=Fury:1a1a")
-        self.assertEqual(L.eval("FA.ExportCode()"), "FAT1-warrior-Arms-010102.warrior-Fury-1a1a")
+        self.assertEqual(L.eval("FA.ExportCode()"), "FAT2-70170-warrior-Arms-010102.warrior-Fury-1a1a")
         L.run("FA.SetActive(2)")
         self.assertEqual(L.eval("FA.ActiveBuild().name"), "Fury")
         self.assertTrue(L.eval("FA.ForgetBuild('warrior', 2)"))
@@ -537,7 +546,7 @@ class UI(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("isn't a build code", err)
         L.run("FA.ImportText('FAT1-warrior-Arms-0101.mage-Frost-0a'); FA.OpenImport(FA.ExportCode())")
-        self.assertEqual(L.eval("ForeverArmouryImportText.text"), "FAT1-warrior-Arms-0101")
+        self.assertEqual(L.eval("ForeverArmouryImportText.text"), "FAT2-70170-warrior-Arms-0101")
 
     def test_the_part_switch_hides_the_panel(self):
         L.run("FA.SetPart('plan', false)")

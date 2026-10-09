@@ -28,11 +28,11 @@ Click another build in the panel to follow it. If your points fit it, Apply carr
 ## The code
 
 ```
-FAT1-warrior-Arms%20PvP-0a0a0a0b0b0b1c
-FAT <version> - <class> - <name> - <picks> { . <class> - <name> - <picks> }
+FAT2-70170-warrior-Arms%20PvP-0a0a0a0b0b0b1c
+FAT <version> - <build> - <class> - <name> - <picks> { . <class> - <name> - <picks> }
 ```
 
-The site writes it (`public/content/build-code.js` in forever-armoury) and `BuildCode.lua` reads it. The picks are the build's points in the order spent, two characters each: the tree, then the talent's cell (tier and column).
+The site writes it (`public/content/build-code.js` in forever-armoury) and `BuildCode.lua` reads it. The build is the game client's build number the talents are from (`GetBuildInfo`'s second answer): a talent that moves between the beta's builds changes what a cell means, so the site carries a code's picks to the trees it has by it; the addon writes the build it runs on and applies a code's cells to the game's own trees, which are the truth in-game. A `FAT1-` code, from before the build was written in, still reads. The picks are the build's points in the order spent, two characters each: the tree, then the talent's cell (tier and column).
 
 ## The Forever client
 
