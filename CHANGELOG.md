@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0 (unreleased)
+
+Fixes before the first release (forever-armoury #1535):
+
+- **Apply** no longer refuses before anything is staged: the game's `CanChangeTalents` is only true once changes are, so it's asked after the first point, and a no rolls back.
+- **A commit the game fails after it starts** (its cast) is rolled back, and chat says so.
+- **Import keeps each build's game build**, so Export gives a build back as it came: a `FAT2-<build>-` code for each game build, one per line, and `FAT1-` for a build from a `FAT1-` code.
+- **The talent sort** takes each tree's grid from its own nodes, and says in chat when a talent doesn't sort into a cell (past the fourth column or the seventh row, or on a cell another has). `/fa debug` prints each node's position, each tree's spacing and first column, and what was left out and why.
+- **The active config** falls back to the active spec group's when `GetActiveConfigID` has no answer, as the talent window does.
+- **Build names encode the same under every locale**: the encoder spelt letters and digits with `%w`, which takes bytes above 127 for letters under a UTF-8 locale.
+- **Talented**: the first point's level is 10 minus the perk's rank, read from the game, for the next talent's level, what Apply can spend and the trainer reset's count.
+- `LICENSE` (MIT), `.pkgmeta` for the CurseForge packager, and the version from the git tag.
+
 ## 0.2.0 (unreleased)
 
 - **Apply**: spends your unspent points as the build you follow says, in order, after one confirm; all or none.

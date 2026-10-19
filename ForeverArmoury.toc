@@ -2,11 +2,12 @@
 ## Title: Forever Armoury
 ## Notes: Your Forever Armoury talent builds in the game: paste them in, pick one, and see your next talent.
 ## Author: Forever Armoury
-## Version: 0.2.0
+## Version: @project-version@
 ## SavedVariables: ForeverArmouryDB
 ## SavedVariablesPerCharacter: ForeverArmouryCharDB
 ## X-Website: https://foreverarmoury.app
 ## X-Category: Class
+# ## X-Curse-Project-ID: the CurseForge project's number, once it exists (forever-armoury#1537)
 
 ForeverArmoury.lua
 BuildCode.lua

@@ -1,7 +1,8 @@
 --[[ The saved builds, the character's active one, where the character is on it, and what Apply and Swap do.
 
-     FA.db.builds[class] is a list of { id, name, picks }: every build imported on this account, by class, and
-     FA.char.build is the id of the one this character follows. A build's points name a tree and a cell; Talents.lua
+     FA.db.builds[class] is a list of { id, name, picks, build }: every build imported on this account, by class, with
+     the game build its picks are from (false for a FAT1- code's, from before codes carried it), and FA.char.build is
+     the id of the one this character follows. A build's points name a tree and a cell; Talents.lua
      says which of the game's talents sits there, so the addon ships no talent data. ]]
 
 local _, FA = ...
@@ -12,17 +13,19 @@ function FA.BuildsFor(cls)
   return list
 end
 
---[[ Keeps the builds a code gave (FA.Code.Read). A build with the name of one already kept for its class replaces
-     that one's points and keeps its id, so pasting a build again after changing it on the site updates it, and the
-     characters following it stay on it. Answers how many were for this character's class, and how many for others. ]]
+--[[ Keeps the builds a code gave (FA.Code.Read), each with the game build it's from, so Export gives it back as it
+     came. A build with the name of one already kept for its class replaces that one's points and build and keeps its
+     id, so pasting a build again after changing it on the site updates it, and the characters following it stay on
+     it. Answers how many were for this character's class, and how many for others. ]]
 function FA.AddBuilds(builds)
   local mine, others = 0, 0
   for _, b in ipairs(builds) do
     local list, found = FA.BuildsFor(b.cls), nil
     for _, old in ipairs(list) do if old.name == b.name then found = old end end
-    if found then found.picks = b.picks
+    local build = b.build or false
+    if found then found.picks, found.build = b.picks, build
     else
-      list[#list + 1] = { id = FA.db.nextId, name = b.name, picks = b.picks }
+      list[#list + 1] = { id = FA.db.nextId, name = b.name, picks = b.picks, build = build }
       FA.db.nextId = FA.db.nextId + 1
     end
     if b.cls == FA.class then mine = mine + 1 else others = others + 1 end
@@ -49,14 +52,25 @@ function FA.ActiveBuild()
 end
 function FA.SetActive(id) FA.char.build = id end
 
---[[ The code for every build of this character's class with points, for the site's Import box; nil when there are none. ]]
+--[[ The code for every build of this character's class with points, for the site's Import box; nil when there are none.
+     A code carries one game build, so builds from different ones are a code each, a line each, in the order the
+     first of each comes; the site reads every code in a paste. A build kept before builds were (nil) is the game's. ]]
 function FA.ExportCode()
-  local out = {}
+  local groups, byBuild = {}, {}
   for _, b in ipairs(FA.BuildsFor(FA.class)) do
-    if b.picks ~= "" then out[#out + 1] = { cls = FA.class, name = b.name, picks = b.picks } end
+    if b.picks ~= "" then
+      local build = b.build
+      if build == nil then build = FA.Code.GameBuild() end
+      local key = build == false and "FAT1" or build
+      if not byBuild[key] then byBuild[key] = { build = build, builds = {} }; groups[#groups + 1] = byBuild[key] end
+      local list = byBuild[key].builds
+      list[#list + 1] = { cls = FA.class, name = b.name, picks = b.picks }
+    end
   end
-  if #out == 0 then return nil end
-  return FA.Code.Write(out)
+  if #groups == 0 then return nil end
+  local codes = {}
+  for i, g in ipairs(groups) do codes[i] = FA.Code.Write(g.builds, g.build) end
+  return table.concat(codes, "\n")
 end
 
 --[[ Where a spec is on a build (the active spec without a view). Answers a table, or nil and why:
@@ -74,6 +88,7 @@ function FA.Progress(build, view)
   view = view or FA.Talents.View()
   if not view then return nil, "The game hasn't given its talents yet. Open the talent window and try again." end
   local planned, byKey, taken, left = {}, {}, 0, {}
+  local first = FA.FirstLevel()
   for n, p in ipairs(points) do
     local t = FA.Talents.At(p.tab, p.cell, view)
     if not t then return nil, "A talent in this build isn't in your talent trees. The site may be newer than this addon." end
@@ -81,7 +96,7 @@ function FA.Progress(build, view)
     planned[key] = (planned[key] or 0) + 1
     byKey[key] = t
     if planned[key] <= t.rank then taken = taken + 1
-    else left[#left + 1] = { n = n, talent = t, rank = planned[key], level = n + FA.FIRST_LEVEL - 1 } end
+    else left[#left + 1] = { n = n, talent = t, rank = planned[key], level = n + first - 1 } end
   end
   local extra = {}
   for tab, cells in pairs(view.cells) do
@@ -94,7 +109,7 @@ function FA.Progress(build, view)
   local spent = FA.Talents.Spent(view)
   local level = UnitLevel("player") or 1
   return { next = left[1], left = left, extra = extra, points = #points, spent = spent, off = spent - taken,
-    due = math.max(0, math.min(#points, level - FA.FIRST_LEVEL + 1)) }
+    due = math.max(0, math.min(#points, level - first + 1)) }
 end
 
 --[[ What Apply would spend now: the build's points not taken, in order, as many as the character has unspent.

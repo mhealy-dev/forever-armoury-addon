@@ -12,9 +12,11 @@ Copy the folder into `World of Warcraft\_forever_\Interface\AddOns\ForeverArmour
 
 - `/fa` opens the talent window, with the addon's panel beside it: your builds for this class, the one you follow marked, and its next talent named and lit in the trees. Click a build to follow it; the **x** beside it forgets it.
 - **Import** (or `/fa import`) opens the box to paste a code into. One paste can hold every build of a class, or several codes.
-- **Export** (or `/fa export`) puts the code for every build of your class in the box, to paste into the site's Import box.
-- **Apply** (or `/fa apply`) spends your unspent points as the build you follow says, in its order, after one confirm that names them. It's all or none: if the game refuses a point, nothing is spent. The button says how many points it would spend, or why it can't.
-- `/fa plan off` turns the level plan part off; `/fa options` opens the settings; `/fa debug` lists every talent by tree, row and column as the addon reads them.
+- **Export** (or `/fa export`) puts the code for every build of your class in the box, to paste into the site's Import box. Each build keeps the game build it was imported from, so builds from different game builds come out as a code each, one per line; the site reads them all from one paste.
+- **Apply** (or `/fa apply`) spends your unspent points as the build you follow says, in its order, after one confirm that names them. It's all or none: if the game refuses a point, or fails the commit, nothing is spent. The button says how many points it would spend, or why it can't.
+- `/fa plan off` turns the level plan part off; `/fa options` opens the settings; `/fa debug` lists every talent by tree, row and column as the addon reads them, with each node's position, the grid each tree was sorted by, and any talent left out and why.
+
+With the Legacy perk **Talented**, your first talent point comes earlier, a level for each rank; the addon reads your rank from the game and moves the build's levels to match.
 
 A build is kept for the account, so every character of its class can follow it. Pasting a build again, after changing it on the site, updates the one with that name.
 
@@ -39,8 +41,10 @@ The site writes it (`public/content/build-code.js` in forever-armoury) and `Buil
 The Forever client (Blizzard's game type `camelot`, 1.60.x, interface `16001`) keeps its talents in the trait system that retail's talent trees use, not in the old `GetTalentInfo` API, which it doesn't have at all (checked in Blizzard's UI source for 1.60.1). So:
 
 - The talent window is `PlayerSpellsFrame.TalentsFrame` (`Blizzard_PlayerSpells`, loaded on demand), and each talent is a trait node with a position. `Talents.lua` sorts the nodes of each tree into columns and rows by position, so the site's cell names the node, and the addon carries no talent data.
-- Apply stages each point with `C_Traits.PurchaseRank` and applies them with `C_ClassTalents.CommitConfig()`, as the window's own Apply button does; if a point is refused, or the commit is, `C_Traits.RollbackConfig` drops everything staged. It won't start while the window has changes of its own waiting, or in combat.
-- The client has dual spec: the window's two tabs are spec groups, each with its own trait config (`C_SpecializationInfo.GetCombatConfigIDForSpecGroup`). The addon follows the active one and reads the other for Swap.
+- Each tree is sorted on its own grid, the spacing of its own nodes, so one tree drawn differently, or one node off its tree's grid, can't misfile the others. A node that lands past the fourth column or the seventh row, or on a cell another node has, is left out and said in chat, and `/fa debug` names it.
+- Apply stages each point with `C_Traits.PurchaseRank` and applies them with `C_ClassTalents.CommitConfig()`, as the window's own Apply button does. The commit is a cast, so the game can still fail it after it starts; if a point is refused, or the commit is, at once or later (`CONFIG_COMMIT_FAILED`), `C_Traits.RollbackConfig` drops everything staged. `C_ClassTalents.CanChangeTalents()` is only true once changes are staged, so Apply asks it after the first point, and rolls back if the game says no. It won't start while the window has changes of its own waiting, or in combat.
+- The client has dual spec: the window's two tabs are spec groups, each with its own trait config (`C_SpecializationInfo.GetCombatConfigIDForSpecGroup`). The addon follows the active one and reads the other for Swap. When `C_ClassTalents.GetActiveConfigID()` has no answer yet, it takes the active spec group's config, as the window does.
+- Talented is node 110298 of the Legacy Adventure tree 1188 (`Constants.LegacyConsts`); its `ranksPurchased` moves the first point from level 10 to 10 minus the rank.
 
 A client that still has the old API gets the same trees from it, so the rest of the addon has one path.
 
@@ -51,9 +55,15 @@ A client that still has the old API gets the same trees from it, so the rest of 
 - `Talents.lua`: the game's talents as three trees of cells for either spec, spending points, and the talent window.
 - `Builds.lua`: the saved builds, the character's active one, where a spec is on it (`FA.Progress`), and what Apply and Swap do.
 - `TalentUI.lua`: the panel beside the talent window, the highlight, Apply's confirm, the import box, the settings page.
-- `test/run.py`: everything checked in LuaJIT (the game's Lua 5.1) against a stub of the game: both talent APIs, the trait system's staging with tier gates, commit and rollback, dual spec, combat, and the panel drawn against a mock of the frame API. `pip install lupa`, then `python test/run.py`.
+- `test/run.py`: everything checked in the game's Lua 5.1 (LuaJIT when lupa has it) against a stub of the game: both talent APIs, the trait system's staging with tier gates, commit, a commit failed late, and rollback, dual spec, combat, Talented, and the panel drawn against a mock of the frame API. `pip install lupa`, then `python test/run.py`; it passes under any locale, and with `LC_ALL=C`.
+- `.pkgmeta`: what the CurseForge packager builds: the folder `ForeverArmoury`, without the tests and these notes, with the version from the git tag.
+
+## Licence
+
+MIT, in `LICENSE`.
 
 ## Still to settle
 
-- **In the beta**: that the nodes' positions sort into the same rows and columns as the site's trees (`/fa debug`), that Apply's purchases and commit go through from an addon outside the window, the panel's place beside the window, and the highlight's look on the round buttons.
-- **Licence** and the **CurseForge** listing.
+- **In the beta** (forever-armoury#1536): that the nodes' positions sort into the same rows and columns as the site's trees, and nothing is left out (`/fa debug`); what `CanChangeTalents` answers before and after a point is staged; that Apply's purchases and commit go through from an addon outside the window, and what a commit cast that's interrupted leaves; that the unspent count and Talented's rank read as the addon expects; the panel's place beside the window, and the highlight's look on the round buttons.
+- **The CurseForge listing** (forever-armoury#1537): the project, its ID in the `.toc`, and the release process.
+- **Talented in the code** (forever-armoury#1540): the site's codes still say point n is taken at level n + 9; the addon moves the levels by the rank it reads.
