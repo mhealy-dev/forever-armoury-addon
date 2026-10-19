@@ -1,7 +1,12 @@
 package-as: ForeverArmoury
 
+# The packager writes a changelog from the git log into the zip unless it's given one; this is the one it's given.
+manual-changelog:
+  filename: CHANGELOG.md
+  markup-type: markdown
+
 ignore:
   - test
+  - scripts
   - README.md
-  - CHANGELOG.md
   - .venv

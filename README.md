@@ -56,7 +56,45 @@ A client that still has the old API gets the same trees from it, so the rest of 
 - `Builds.lua`: the saved builds, the character's active one, where a spec is on it (`FA.Progress`), and what Apply and Swap do.
 - `TalentUI.lua`: the panel beside the talent window, the highlight, Apply's confirm, the import box, the settings page.
 - `test/run.py`: everything checked in the game's Lua 5.1 (LuaJIT when lupa has it) against a stub of the game: both talent APIs, the trait system's staging with tier gates, commit, a commit failed late, and rollback, dual spec, combat, Talented, and the panel drawn against a mock of the frame API. `pip install lupa`, then `python test/run.py`; it passes under any locale, and with `LC_ALL=C`.
-- `.pkgmeta`: what the CurseForge packager builds: the folder `ForeverArmoury`, without the tests and these notes, with the version from the git tag.
+- `.pkgmeta`: what the CurseForge packager builds: the folder `ForeverArmoury`, without the tests, the release script and this file, with the version from the git tag, and `CHANGELOG.md` as the changelog CurseForge shows.
+- `scripts/release.sh`: builds the release zip from a tag, checks what is in it, and uploads it to CurseForge when asked. See [Releasing](#releasing).
+
+## Releasing
+
+Releases are made by hand from a laptop (GitHub Actions is off), with the [BigWigs packager](https://github.com/BigWigsMods/packager) behind `scripts/release.sh`. The zip is built from a git tag: the tag is the version, put into the `.toc` for `@project-version@`, and the packager sends the zip to CurseForge for the Forever client (`## Interface: 16001`).
+
+Once, to set up:
+
+1. `brew install bash jq`. The packager needs bash 4.3 or newer (macOS has 3.2) and `jq` to upload; the wrapper itself runs with either.
+2. **Create the CurseForge project** at [authors.curseforge.com](https://authors.curseforge.com): *Create project*, game World of Warcraft, category Addons, name *Forever Armoury*. Copy its numeric **Project ID** from the project's overview.
+3. **Put the ID in the `.toc`**: replace the commented line `# ## X-Curse-Project-ID: ...` in `ForeverArmoury.toc` with `## X-Curse-Project-ID: <the ID>`, commit it and merge it to `main`.
+4. **Make an API token** at [authors.curseforge.com/#/settings/api-tokens](https://authors.curseforge.com/#/settings/api-tokens) and keep it out of git, in the gitignored `.release/.env`:
+
+   ```bash
+   mkdir -p .release && printf 'CF_API_TOKEN=%s\n' 'the-token' > .release/.env && chmod 600 .release/.env
+   ```
+
+Then, for each release (the first is `v0.3.0`):
+
+1. Date the version in `CHANGELOG.md`, commit, and merge to `main`. Then be on a clean, current `main`: `git checkout main && git pull`.
+2. Tag it: `git tag -a v0.3.0 -m "Forever Armoury 0.3.0"` and `git push origin v0.3.0`.
+3. Build it without uploading:
+
+   ```bash
+   scripts/release.sh
+   ```
+
+   It stops unless the tree is clean, you are on `main`, and `HEAD` has a `vX.Y.Z` tag. It fetches the packager into `.release/` the first time (a pinned version, checked against its hash), builds `.release/ForeverArmoury-v0.3.0.zip`, prints the zip's listing, and checks it: one `ForeverArmoury/` folder with the `.toc`, the Lua files, `LICENSE` and `CHANGELOG.md` and nothing else (no `test/`, `scripts/` or `README.md`), with the tag as the `.toc`'s version.
+4. Upload it:
+
+   ```bash
+   scripts/release.sh --upload
+   ```
+
+   It builds again, checks the same things, and sends the zip to CurseForge. It also needs the ID in the `.toc`, `CF_API_TOKEN`, `main` and the tag pushed. It sends to CurseForge only, whatever other upload tokens the environment has.
+5. Open the project's page on CurseForge, check the file is listed for the Forever client, and install it from there once.
+
+A tag never moves: a fix is a new tag, `v0.3.1`. If the token route fails, upload the zip from step 3 through the project's *Upload file* form instead.
 
 ## Licence
 
