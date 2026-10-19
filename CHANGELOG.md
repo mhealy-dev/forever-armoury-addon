@@ -12,6 +12,7 @@ Fixes before the first release (forever-armoury #1535):
 - **Build names encode the same under every locale**: the encoder spelt letters and digits with `%w`, which takes bytes above 127 for letters under a UTF-8 locale.
 - **Talented**: the first point's level is 10 minus the perk's rank, read from the game, for the next talent's level, what Apply can spend and the trainer reset's count.
 - `LICENSE` (MIT), `.pkgmeta` for the CurseForge packager, and the version from the git tag.
+- `scripts/release.sh` builds and checks the release zip from a tag, and uploads it to CurseForge on a flag (forever-armoury #1537).
 
 ## 0.2.0 (unreleased)
 

@@ -2,6 +2,7 @@ package-as: ForeverArmoury
 
 ignore:
   - test
+  - scripts
   - README.md
   - CHANGELOG.md
   - .venv
