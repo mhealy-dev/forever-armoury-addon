@@ -56,7 +56,7 @@ A client that still has the old API gets the same trees from it, so the rest of 
 - `Builds.lua`: the saved builds, the character's active one, where a spec is on it (`FA.Progress`), and what Apply and Swap do.
 - `TalentUI.lua`: the panel beside the talent window, the highlight, Apply's confirm, the import box, the settings page.
 - `test/run.py`: everything checked in the game's Lua 5.1 (LuaJIT when lupa has it) against a stub of the game: both talent APIs, the trait system's staging with tier gates, commit, a commit failed late, and rollback, dual spec, combat, Talented, and the panel drawn against a mock of the frame API. `pip install lupa`, then `python test/run.py`; it passes under any locale, and with `LC_ALL=C`.
-- `.pkgmeta`: what the CurseForge packager builds: the folder `ForeverArmoury`, without the tests, the release script and these notes, with the version from the git tag.
+- `.pkgmeta`: what the CurseForge packager builds: the folder `ForeverArmoury`, without the tests, the release script and this file, with the version from the git tag, and `CHANGELOG.md` as the changelog CurseForge shows.
 - `scripts/release.sh`: builds the release zip from a tag, checks what is in it, and uploads it to CurseForge when asked. See [Releasing](#releasing).
 
 ## Releasing
@@ -84,7 +84,7 @@ Then, for each release (the first is `v0.3.0`):
    scripts/release.sh
    ```
 
-   It stops unless the tree is clean, you are on `main`, and `HEAD` has a `vX.Y.Z` tag. It fetches the packager into `.release/` the first time (a pinned version, checked against its hash), builds `.release/ForeverArmoury-v0.3.0.zip`, prints the zip's listing, and checks it: one `ForeverArmoury/` folder with the `.toc` and the Lua files and nothing else (no `test/`, `scripts/`, `README.md` or `CHANGELOG.md`), with the tag as the `.toc`'s version.
+   It stops unless the tree is clean, you are on `main`, and `HEAD` has a `vX.Y.Z` tag. It fetches the packager into `.release/` the first time (a pinned version, checked against its hash), builds `.release/ForeverArmoury-v0.3.0.zip`, prints the zip's listing, and checks it: one `ForeverArmoury/` folder with the `.toc`, the Lua files, `LICENSE` and `CHANGELOG.md` and nothing else (no `test/`, `scripts/` or `README.md`), with the tag as the `.toc`'s version.
 4. Upload it:
 
    ```bash

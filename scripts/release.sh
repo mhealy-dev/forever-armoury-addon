@@ -7,9 +7,9 @@
 #   scripts/release.sh --upload    the same, then upload it to CurseForge (needs the project ID and CF_API_TOKEN)
 #
 # It stops unless: the tree is clean, you are on main, HEAD has a tag vX.Y.Z (git tag -a v0.3.0), and the zip is
-# one ForeverArmoury/ folder of the .toc and Lua files, with the tag's version in the .toc and nothing from test/,
-# README or CHANGELOG. For --upload the tag and main must also be on GitHub, the .toc must carry the
-# CurseForge project ID, and CF_API_TOKEN must be set (in .release/.env, or the environment).
+# one ForeverArmoury/ folder of the .toc, Lua files, LICENSE and CHANGELOG.md, with the tag's version in the .toc
+# and nothing from test/, scripts/ or the README. For --upload the tag and main must also be on GitHub, the .toc
+# must carry the CurseForge project ID, and CF_API_TOKEN must be set (in .release/.env, or the environment).
 #
 # The packager is fetched into .release/ (gitignored) at a pinned version and checked against its hash.
 # It needs bash 4.3 or newer, which macOS doesn't ship: brew install bash.
@@ -23,7 +23,7 @@ TAG_FORMAT='^v[0-9]+\.[0-9]+\.[0-9]+$'
 
 fail() { echo "✗ $1" >&2; exit 1; }
 say() { echo; echo "→ $1"; }
-usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n "2,17p" "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 UPLOAD=0
 while [ $# -gt 0 ]; do
@@ -99,14 +99,14 @@ fi
 
 say "Building $ADDON-$TAG.zip"
 rm -rf "${RELEASE_DIR:?}/$ADDON" "$RELEASE_DIR/$ADDON"-*.zip
-FLAGS=()
+FLAGS=(-n "{package-name}-{project-version}:{project-version}")
 if [ "$UPLOAD" = 1 ]; then
   # CurseForge only: leave out the other sites' tokens if they happen to be in the environment.
   unset WOWI_API_TOKEN WAGO_API_TOKEN GH_API_TOKEN GITHUB_API_TOKEN GITHUB_OAUTH
 else
   FLAGS+=(-d)
 fi
-(cd "$ROOT" && "$BASH4" "$PACKAGER" ${FLAGS[@]+"${FLAGS[@]}"}) || fail "the packager failed"
+(cd "$ROOT" && "$BASH4" "$PACKAGER" "${FLAGS[@]}") || fail "the packager failed"
 
 ZIP=$RELEASE_DIR/$ADDON-$TAG.zip
 [ -s "$ZIP" ] || fail "no $ZIP was built: $(ls "$RELEASE_DIR"/*.zip 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
@@ -118,18 +118,18 @@ say "Checking the zip"
 NAMES=$(unzip -Z1 "$ZIP")
 TOP=$(echo "$NAMES" | sed 's#/.*##' | sort -u)
 [ "$TOP" = "$ADDON" ] || fail "the zip should hold the one folder $ADDON/, but holds: $(echo $TOP)"
-EXPECT=$(cd "$ROOT" && git ls-files -- ':(glob)*.lua' ':(glob)*.toc' | sed "s#^#$ADDON/#" | sort)
+EXPECT=$(cd "$ROOT" && git ls-files -- ':(glob)*.lua' ':(glob)*.toc' LICENSE CHANGELOG.md | sed "s#^#$ADDON/#" | sort)
 GOT=$(echo "$NAMES" | grep -v '/$' | sort)
 if [ "$GOT" != "$EXPECT" ]; then
-  fail "the zip's files aren't the .toc and Lua files:
+  fail "the zip's files aren't the .toc, Lua files, LICENSE and CHANGELOG.md:
 zip has, repo doesn't: $(comm -23 <(echo "$GOT") <(echo "$EXPECT") | tr '\n' ' ')
 repo has, zip doesn't: $(comm -13 <(echo "$GOT") <(echo "$EXPECT") | tr '\n' ' ')"
 fi
-echo "$NAMES" | grep -Eiq '(^|/)(test|README|CHANGELOG|\.git|\.release|\.venv)' && fail "the zip holds something that should stay out"
+echo "$NAMES" | grep -Eiq '(^|/)(test|scripts|README|\.git|\.release|\.venv)' && fail "the zip holds something that should stay out"
 TOC_VERSION=$(unzip -p "$ZIP" "$ADDON/$ADDON.toc" | sed -n 's/^## Version:[[:space:]]*//p' | tr -d '\r')
 [ "$TOC_VERSION" = "$TAG" ] || fail "the zip's .toc says Version '$TOC_VERSION', not '$TAG'"
 ! unzip -p "$ZIP" | grep -q '@project-version@' || fail "'@project-version@' is still in the zip"
-echo "✓ one $ADDON/ folder, $(echo "$GOT" | wc -l | tr -d ' ') files, no test/README/CHANGELOG, Version $TOC_VERSION"
+echo "✓ one $ADDON/ folder, $(echo "$GOT" | wc -l | tr -d ' ') files, no test/scripts/README, Version $TOC_VERSION"
 
 if [ "$UPLOAD" = 1 ]; then
   say "Uploaded $(basename "$ZIP") to CurseForge project $TOC_ID: check the page installs."
