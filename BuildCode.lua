@@ -17,11 +17,16 @@
        builds, nil, notes   builds: { { cls, name, picks, build }, ... }   notes: what was left out, to tell the person
        nil, error           error: why, in a sentence
      build is the game build the picks are from, or nil for a FAT1- code, from before the build was written in.
-     FA.Code.Write(builds) is the code for a list of { cls, name, picks }, with the build the game is on.
+     FA.Code.Write(builds[, build]) is the code for a list of { cls, name, picks } from one game build: the game's own
+     when build is nil, and a FAT1- code when it's false, for picks from a code from before the build was written in.
+     FA.Code.GameBuild() is the build the game is on, as a code carries it.
      FA.Code.Points(picks) is a picks string as { { tab = 1..3, cell = 0..27 }, ... }, or nil for one that doesn't read.
 
      Each version has its own reader in READERS, so a code from an older site still reads when the format changes.
-     Version 1 had no build: FAT1-<class>-<name>-<picks>{.<class>-<name>-<picks>}. ]]
+     Version 1 had no build: FAT1-<class>-<name>-<picks>{.<class>-<name>-<picks>}.
+
+     Letters and digits are spelt out as A-Z, a-z and 0-9 rather than %w, which follows the locale: under a UTF-8 one
+     it takes bytes above 127 for letters, and a name would pass them through unencoded. ]]
 
 local _, FA = ...
 local Code = {}
@@ -30,11 +35,11 @@ FA.Code = Code
 Code.VERSION = 2
 local CLASSES = { warrior = true, paladin = true, hunter = true, rogue = true, priest = true, shaman = true, mage = true, warlock = true, druid = true }
 --[[ a code in a pasted text: its start, and everything after it that a code is made of ]]
-local FIND = "FAT%d+%-[%w%%%.%-]*"
+local FIND = "FAT%d+%-[A-Za-z0-9%%%.%-]*"
 local NOT_A_CODE = "That isn't a build code. A build code starts with FAT2- (or FAT1-, from before)."
 
 local function clean(name) return (tostring(name or ""):gsub("%s+", " "):match("^%s*(.-)%s*$")) end
-local function encodeName(name) return (name:gsub("[^%w]", function(c) return string.format("%%%02X", c:byte()) end)) end
+local function encodeName(name) return (name:gsub("[^A-Za-z0-9]", function(c) return string.format("%%%02X", c:byte()) end)) end
 --[[ The name as text, or nil when it isn't a name (a broken or cut-off %XX). ]]
 local function decodeName(s)
   for pos in s:gmatch("()%%") do if not s:sub(pos + 1, pos + 2):match("^%x%x$") then return nil end end
@@ -45,6 +50,7 @@ local function gameBuild()
   local _, build = GetBuildInfo()
   return tonumber(build) or 0
 end
+Code.GameBuild = gameBuild
 
 function Code.Points(picks)
   if type(picks) ~= "string" or #picks % 2 ~= 0 or #picks > 102 then return nil end
@@ -57,10 +63,11 @@ function Code.Points(picks)
   return out
 end
 
-function Code.Write(builds)
+function Code.Write(builds, build)
   local parts = {}
   for i, b in ipairs(builds) do parts[i] = b.cls .. "-" .. encodeName(clean(b.name)) .. "-" .. (b.picks or "") end
-  return "FAT" .. Code.VERSION .. "-" .. gameBuild() .. "-" .. table.concat(parts, ".")
+  if build == false then return "FAT1-" .. table.concat(parts, ".") end
+  return "FAT" .. Code.VERSION .. "-" .. (build or gameBuild()) .. "-" .. table.concat(parts, ".")
 end
 
 --[[ Version 1: <class>-<name>-<picks>{.<class>-<name>-<picks>}, with no build. Adds to out.builds and out.empty, each
@@ -68,7 +75,7 @@ end
 local function read1(body, out, build)
   for seg in (body .. "."):gmatch("(.-)%.") do
     local n = #out.builds + out.empty + 1
-    local cls, name, picks = seg:match("^([a-z]+)%-([%w%%]*)%-([0-9a-r]*)$")
+    local cls, name, picks = seg:match("^([a-z]+)%-([A-Za-z0-9%%]*)%-([0-9a-r]*)$")
     if not cls or not CLASSES[cls] or not Code.Points(picks) then
       return "Build " .. n .. " of that code doesn't read. It may be cut off: copy the whole code again."
     end

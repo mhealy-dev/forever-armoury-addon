@@ -12,7 +12,9 @@
 
      A view is one spec's talents: { trees = { { name, icon }, ... }, cells = { [tab] = { [cell] = talent } } }, a
      talent being { tab, cell, row, col, name, icon, rank, max, node }; rank is what's spent, staged points included, and
-     node names it to the game (a node id, or a talent index).
+     node names it to the game (a node id, or a talent index). From the trait system a talent also has x and y, its
+     node's position, and the view has grid, each tree's { colStep, rowStep, originX, topY } it was sorted by, and
+     dropped, each tree's nodes that didn't sort into a cell of their own: { { talent, why }, ... }.
 
      FA.Talents.View([configID])     a spec's view (the active one's without a config), or nil before the game answers
      FA.Talents.Ready()              whether the active spec's view is in
@@ -22,63 +24,101 @@
      FA.Talents.Unspent()            points the character has to spend, or nil when the game won't say
      FA.Talents.OtherSpec()          the inactive spec's view and its number (1 or 2), or nil without dual spec
      FA.Talents.SpecName(n)          a spec's name, "Primary" or "Secondary"
-     FA.Talents.CanChange()          true, or false and why talents can't change now (combat, ...)
+     FA.Talents.CanChange()          true, or false and why talents can't change now (combat)
      FA.Talents.Learn(list)          spends a rank in each talent of a list, in order, all or none: true, or false and why
+     FA.Talents.CommitFailed(cfg)    CONFIG_COMMIT_FAILED: rolls back the addon's commit, true when it was the addon's
+     FA.Talents.Committed(cfg)       TRAIT_CONFIG_UPDATED: the addon's commit went through
      FA.Talents.Forget()             drop what's cached: the next call asks the game again (called when points change)
      FA.Talents.Frame() / Window()   the talent window's frame and the window the panel sits on, once loaded
      FA.Talents.Button(t)            the window's button for a talent, or nil (the panel lights it)
      FA.Talents.Toggle()             open or close the talent window
      FA.Talents.Loaded(name)         whether an ADDON_LOADED name is the talent UI's
-     FA.Talents.Dump()               every talent by tree, row and column, as lines of text (/fa debug) ]]
+     FA.Talents.Dump()               every talent by tree, row and column, with the positions and grid it came from and
+                                     the nodes left out, as lines of text (/fa debug) ]]
 
 local _, FA = ...
 local Talents = {}
 FA.Talents = Talents
 
 local views = {}   -- configID (or "legacy") -> view
+local told = 0     -- how many talents that didn't sort chat was last told of: it's told again only when that changes
 
 local function hasTraits() return C_Traits and C_ClassTalents and C_ClassTalents.GetActiveConfigID and true or false end
-local function activeConfig() return hasTraits() and C_ClassTalents.GetActiveConfigID() or nil end
+--[[ The active spec's config. GetActiveConfigID can be nil early on, and the game's own window then takes the active
+     spec group's combat config, so this does too. ]]
+local function activeConfig()
+  if not hasTraits() then return nil end
+  local configID = C_ClassTalents.GetActiveConfigID()
+  if not configID and C_SpecializationInfo and C_SpecializationInfo.GetCombatConfigIDForSpecGroup and C_SpecializationInfo.GetActiveSpecGroup then
+    configID = C_SpecializationInfo.GetCombatConfigIDForSpecGroup(C_SpecializationInfo.GetActiveSpecGroup())
+  end
+  return configID
+end
 local function treeOf(configID)
   local info = C_Traits.GetConfigInfo(configID)
   return info and info.treeIDs and info.treeIDs[1]
 end
 
 local function round(x) return math.floor(x + 0.5) end
---[[ The smallest gap between the distinct values in a list: the pitch of the grid they sit on, and the first value. ]]
+--[[ The smallest gap between the distinct values in a list, the pitch of the grid they sit on (nil with fewer than two
+     values to measure it by), then the first value and the last. ]]
 local function pitch(values)
   local distinct, seen = {}, {}
   for _, v in ipairs(values) do if not seen[v] then seen[v] = true; distinct[#distinct + 1] = v end end
   table.sort(distinct)
   local step
   for i = 2, #distinct do local d = distinct[i] - distinct[i - 1]; if d > 0 and (not step or d < step) then step = d end end
-  return step or 1, distinct[1]
+  return step, distinct[1], distinct[#distinct]
 end
 
---[[ Where each tree's first column is. A tree with talents in every column starts at its leftmost one. A tree that
-     leaves its first column empty would start a column late that way, so when two trees are full their spacing says
-     where every tree starts; a lone short tree falls back to its leftmost talent. ]]
-local function columnOrigins(nodes, step)
-  local minX, maxX, origins = {}, {}, {}
+--[[ Each tree's grid, from its own nodes: the pitch of its columns and rows, its leftmost and rightmost talent, and its
+     topmost, which is tier 1, since every tree starts there. Each tree has its own, so a tree drawn on another spacing,
+     or a node off its tree's grid, only touches that tree. A tree with one column or one row has no pitch of its own
+     and takes that of the tree with the most talents that has one (borrowed, for /fa debug). ]]
+local function grids(nodes, count)
+  local xs, ys, out = {}, {}, {}
+  for t = 1, count do xs[t], ys[t] = {}, {} end
   for _, n in ipairs(nodes) do
-    local t, x = n.tab, n.info.posX
-    if not minX[t] or x < minX[t] then minX[t] = x end
-    if not maxX[t] or x > maxX[t] then maxX[t] = x end
+    xs[n.tab][#xs[n.tab] + 1] = n.info.posX
+    ys[n.tab][#ys[n.tab] + 1] = n.info.posY
   end
+  for t = 1, count do
+    local g = { size = #xs[t] }
+    g.colStep, g.minX, g.maxX = pitch(xs[t])
+    g.rowStep, g.topY = pitch(ys[t])
+    out[t] = g
+  end
+  for _, k in ipairs({ { "colStep", "columns" }, { "rowStep", "rows" } }) do
+    local key, said, from = k[1], k[2], nil
+    for t = 1, count do if out[t][key] and (not from or out[t].size > from.size) then from = out[t] end end
+    for t = 1, count do
+      if not out[t][key] then out[t][key] = from and from[key] or 1; out[t].borrowed = (out[t].borrowed and out[t].borrowed .. " and " or "") .. said end
+    end
+  end
+  return out
+end
+
+--[[ Where each tree's first column is, as grid's originX, and what said so, as grid's origin. A tree with talents in
+     every column (or past them, with a stray node) starts at its leftmost one. A tree that leaves its first column
+     empty would start a column late that way, so when two trees are full their spacing says where every tree starts;
+     a lone short tree falls back to its leftmost talent. ]]
+local function columnOrigins(grid)
   local full = {}
-  for t, x in pairs(minX) do if round((maxX[t] - x) / step) == 3 then full[#full + 1] = t; origins[t] = x end end
-  table.sort(full)
-  for t, x in pairs(minX) do
-    if not origins[t] then
+  for t, g in ipairs(grid) do
+    if g.minX and round((g.maxX - g.minX) / g.colStep) >= 3 then full[#full + 1] = t; g.originX = g.minX; g.origin = "a full tree's leftmost talent" end
+  end
+  for t, g in ipairs(grid) do
+    if g.minX and not g.originX then
       if #full >= 2 then
         local a, b = full[1], full[2]
-        origins[t] = minX[a] + (t - a) * (minX[b] - minX[a]) / (b - a)
+        g.originX = grid[a].minX + (t - a) * (grid[b].minX - grid[a].minX) / (b - a)
+        g.origin = "from the full trees' spacing"
       else
-        origins[t] = x
+        g.originX = g.minX
+        g.origin = "its leftmost talent"
       end
     end
   end
-  return origins
 end
 
 local function nodeNameAndIcon(configID, node)
@@ -107,20 +147,35 @@ local function readTraits(configID)
     if tab and n.maxRanks and n.maxRanks > 0 then nodes[#nodes + 1] = { tab = tab, info = n } end
   end
   if #nodes == 0 then return nil end
-  --[[ the pitch of the columns and of the rows, from the whole tree; the first row is the topmost talent anywhere,
-       since every tree starts at tier 1, and each tree's first column is as columnOrigins finds it ]]
-  local xs, ys = {}, {}
-  for _, n in ipairs(nodes) do xs[#xs + 1] = n.info.posX; ys[#ys + 1] = n.info.posY end
-  local colStep = pitch(xs)
-  local rowStep, topY = pitch(ys)
-  local origins = columnOrigins(nodes, colStep)
+  --[[ each tree's rows and columns from its own grid; a node that lands outside the four columns and seven rows a
+       code's cell can name, or on a cell another node has, is left out and kept in dropped, to say so ]]
+  local grid = grids(nodes, #out.trees)
+  columnOrigins(grid)
+  out.grid, out.dropped = grid, {}
+  local left = 0
+  for t = 1, #out.trees do out.dropped[t] = {} end
   for _, n in ipairs(nodes) do
-    local col, row = round((n.info.posX - origins[n.tab]) / colStep) + 1, round((n.info.posY - topY) / rowStep) + 1
-    if col >= 1 and col <= 4 and row >= 1 then
-      local name, icon = nodeNameAndIcon(configID, n.info)
-      out.cells[n.tab][(row - 1) * 4 + (col - 1)] = { tab = n.tab, cell = (row - 1) * 4 + (col - 1), row = row, col = col,
-        name = name, icon = icon, rank = n.info.ranksPurchased or 0, max = n.info.maxRanks, node = n.info.ID }
+    local g, x, y = grid[n.tab], n.info.posX, n.info.posY
+    local col, row = round((x - g.originX) / g.colStep) + 1, round((y - g.topY) / g.rowStep) + 1
+    local cell = (row - 1) * 4 + (col - 1)
+    local name, icon = nodeNameAndIcon(configID, n.info)
+    local talent = { tab = n.tab, cell = cell, row = row, col = col, name = name, icon = icon, rank = n.info.ranksPurchased or 0,
+      max = n.info.maxRanks, node = n.info.ID, x = x, y = y }
+    local why, there = nil, out.cells[n.tab][cell]
+    if col < 1 or col > 4 then why = "column " .. col .. ", outside the four"
+    elseif row > 7 then why = "row " .. row .. ", below the seventh"
+    elseif there then why = "on " .. row .. "," .. col .. " with " .. (there.name or "?") .. " (node " .. tostring(there.node) .. ")" end
+    if why then
+      out.dropped[n.tab][#out.dropped[n.tab] + 1] = { talent = talent, why = why }
+      left = left + 1
+    else
+      out.cells[n.tab][cell] = talent
     end
+  end
+  if left > 0 and left ~= told then
+    told = left
+    FA.Print(left .. (left == 1 and " talent" or " talents") .. " didn't sort into the trees, so builds can't use " ..
+      (left == 1 and "it" or "them") .. ". /fa debug lists " .. (left == 1 and "it" or "them") .. ".")
   end
   return out
 end
@@ -202,14 +257,25 @@ function Talents.HasStaged()
 end
 Talents.STAGED = "The talent window has changes waiting. Apply or undo them there first."
 
+--[[ Whether talents can change now, before anything is staged: not in combat. The game's own answer,
+     C_ClassTalents.CanChangeTalents, is true only once changes are staged, so asked before it would always refuse;
+     Learn asks it after the first point instead. ]]
 function Talents.CanChange()
   if InCombatLockdown and InCombatLockdown() then return false, "You can't change talents in combat." end
-  if hasTraits() and C_ClassTalents.CanChangeTalents then
-    local canChange, canAdd, err = C_ClassTalents.CanChangeTalents()
-    if not canChange and not canAdd then return false, (err and err ~= "") and err or "You can't change talents right now." end
-  end
   return true
 end
+
+--[[ With a point staged: true, or false and why when the game says the change can't be committed. ]]
+local function canCommit()
+  if not (hasTraits() and C_ClassTalents.CanChangeTalents) then return true end
+  local canChange, canAdd, err = C_ClassTalents.CanChangeTalents()
+  if canChange or canAdd then return true end
+  local why = (err and err ~= "") and err or "You can't change talents right now."
+  return false, why:find("[%.!?]$") and why or why .. "."
+end
+
+local committing   -- the config of the addon's commit while the game casts it, until it says how it went
+local calling      -- inside CommitConfig, where the game can fail the commit before it answers
 
 --[[ Stages a rank in each talent in order, then applies them all; if one can't be bought, none are. With the old
      API, which learns one point per server answer, only the first is learnt and the panel offers the next. ]]
@@ -224,9 +290,22 @@ function Talents.Learn(list)
         Talents.Forget()
         return false, "The game wouldn't take point " .. i .. " (" .. (t.name or "?") .. "). Nothing was spent."
       end
+      if i == 1 then
+        local ok, why = canCommit()
+        if not ok then
+          C_Traits.RollbackConfig(configID)
+          Talents.Forget()
+          return false, why .. " Nothing was spent."
+        end
+      end
     end
-    if not C_ClassTalents.CommitConfig() then
-      C_Traits.RollbackConfig(configID)
+    --[[ true from CommitConfig only means the cast started: CommitFailed rolls back if the game fails it later ]]
+    committing, calling = configID, true
+    local started = C_ClassTalents.CommitConfig()
+    calling = false
+    if not started or committing ~= configID then
+      if committing then C_Traits.RollbackConfig(configID) end
+      committing = nil
       Talents.Forget()
       return false, "The game wouldn't apply the talents. Nothing was spent."
     end
@@ -240,6 +319,15 @@ function Talents.Learn(list)
   end
   return false, "This client has no way for an addon to spend talent points."
 end
+
+function Talents.CommitFailed(configID)
+  if not committing or (configID and configID ~= committing) then return false end
+  C_Traits.RollbackConfig(committing)
+  committing = nil
+  Talents.Forget()
+  return not calling   -- inside CommitConfig, Learn says it
+end
+function Talents.Committed(configID) if configID == committing then committing = nil end end
 
 --[[ ---- the talent window ---- ]]
 function Talents.Frame()
@@ -262,15 +350,36 @@ function Talents.Toggle()
   elseif ToggleTalentFrame then ToggleTalentFrame() end
 end
 
+local function num(x) return x == math.floor(x) and string.format("%d", x) or string.format("%.1f", x) end
+--[[ A talent as /fa debug says it: row,column (cell) name rank/max, then where its node is; a talent left out has no
+     cell to name. ]]
+local function line(x, out)
+  return x.row .. "," .. x.col .. (out and "" or (" (" .. x.cell .. ")")) .. " " .. (x.name or "?") .. " " .. x.rank .. "/" .. (x.max or "?") ..
+    (x.x and (" at " .. num(x.x) .. "," .. num(x.y) .. ", node " .. tostring(x.node)) or "")
+end
+
 function Talents.Dump()
   local v, lines = Talents.View(), {}
   if not v then return { "The game hasn't given its talents yet. Open the talent window and try again." } end
+  local left = 0
   for t, tree in ipairs(v.trees) do
     lines[#lines + 1] = t .. ". " .. (tree.name or "?")
+    local g = v.grid and v.grid[t]
+    if g and g.originX then
+      lines[#lines + 1] = "   columns " .. num(g.colStep) .. " apart from x " .. num(g.originX) .. " (" .. g.origin .. "), rows " ..
+        num(g.rowStep) .. " apart from y " .. num(g.topY) .. (g.borrowed and (" (" .. g.borrowed .. " spaced as another tree's)") or "")
+    end
     for cell = 0, 27 do
       local x = v.cells[t][cell]
-      if x then lines[#lines + 1] = "   " .. x.row .. "," .. x.col .. " (" .. cell .. ") " .. (x.name or "?") .. " " .. x.rank .. "/" .. (x.max or "?") end
+      if x then lines[#lines + 1] = "   " .. line(x) end
     end
+    for _, d in ipairs(v.dropped and v.dropped[t] or {}) do
+      lines[#lines + 1] = "   left out: " .. line(d.talent, true) .. ": " .. d.why
+      left = left + 1
+    end
+  end
+  if v.grid then
+    lines[#lines + 1] = left == 0 and "Every talent has a cell of its own." or (left .. (left == 1 and " talent" or " talents") .. " left out, marked above.")
   end
   return lines
 end

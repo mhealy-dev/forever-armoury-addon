@@ -15,10 +15,26 @@ _G.ForeverArmoury = FA
 
 local meta = C_AddOns and C_AddOns.GetAddOnMetadata or GetAddOnMetadata
 FA.VERSION = meta and meta(ADDON, "Version") or "dev"
---[[ Point n of a build is taken at level n + FIRST_LEVEL - 1: the site's builds start at level 10. A Legacy perk that
-     moves the first point earlier (forever-armoury#512) would change this, which is what the code's version number is
-     for. ]]
+if FA.VERSION:find("^@") then FA.VERSION = "dev" end   -- a checkout, not a package: @project-version@ unfilled
+
+--[[ Point n of a build is taken at level n + FA.FirstLevel() - 1. The site's builds start at level 10, FIRST_LEVEL;
+     the Legacy perk Talented (forever-armoury#512) moves the first point a level earlier for each rank, so the
+     character's first level is 10 minus its rank. The perk is a node of the Legacy system's Adventure tree, read from
+     the game; a game that won't say counts as no ranks. ]]
 FA.FIRST_LEVEL = 10
+local LEGACY = Constants and Constants.LegacyConsts or {}
+FA.TALENTED_TREE = LEGACY.LEGACY_TREE_ADVENTURE_ID or 1188
+FA.TALENTED_NODE = LEGACY.LEGACY_TREE_ADVENTURE_TALENTED_NODE_ID or 110298
+
+--[[ The ranks of Talented the character has, 0 when the game won't say. ]]
+function FA.TalentedRank()
+  if not (C_Traits and C_Traits.GetConfigIDByTreeID and C_Traits.GetNodeInfo) then return 0 end
+  local configID = C_Traits.GetConfigIDByTreeID(FA.TALENTED_TREE)
+  local info = configID and C_Traits.GetNodeInfo(configID, FA.TALENTED_NODE)
+  local rank = info and tonumber(info.ranksPurchased) or 0
+  return math.max(0, math.min(FA.FIRST_LEVEL - 1, rank))
+end
+function FA.FirstLevel() return FA.FIRST_LEVEL - FA.TalentedRank() end
 
 --[[ The addon's parts, each with its own switch (FA.PartOn). The level plan is the first; macros and the UI layout
      may follow. A part that is off draws nothing and hooks nothing it can avoid. ]]
@@ -59,7 +75,7 @@ local HELP = {
   "/fa list  your builds for this class",
   "/fa plan on|off  the level plan part",
   "/fa options  the addon's settings",
-  "/fa debug  every talent by tree, row and column, as the addon reads them",
+  "/fa debug  every talent by tree, row and column, as the addon reads them from the game's positions",
 }
 SLASH_FOREVERARMOURY1 = "/fa"
 SLASH_FOREVERARMOURY2 = "/armoury"
@@ -114,7 +130,9 @@ events:SetScript("OnEvent", function(_, event, arg1)
     if FA.HookTalentFrame then FA.HookTalentFrame() end
     if FA.SetupOptions then FA.SetupOptions() end
   elseif event == "CONFIG_COMMIT_FAILED" then
-    FA.Print("The game didn't apply the talents. Nothing was spent.")
+    --[[ The commit is a cast, so the game can turn it down after CommitConfig said yes: what the addon staged is
+         rolled back here. A commit of the window's own is the window's to report. ]]
+    if FA.Talents.CommitFailed(arg1) then FA.Print("The game didn't apply the talents, so they were rolled back. Nothing was spent.") end
     FA.Talents.Forget()
     if FA.Refresh then FA.Refresh() end
   elseif event == "CONFIRM_TALENT_WIPE" then
@@ -123,11 +141,12 @@ events:SetScript("OnEvent", function(_, event, arg1)
     local build = FA.PartOn("plan") and FA.ActiveBuild()
     local points = build and FA.Code.Points(build.picks)
     if points then
-      local due = math.min(#points, math.max(0, (UnitLevel("player") or 1) - FA.FIRST_LEVEL + 1))
+      local due = math.min(#points, math.max(0, (UnitLevel("player") or 1) - FA.FirstLevel() + 1))
       FA.Print("After the reset, open your talents and press Apply: it spends " .. due .. (due == 1 and " point" or " points") .. " as " ..
         (build.name ~= "" and build.name or "your build") .. " says.")
     end
   else
+    if event == "TRAIT_CONFIG_UPDATED" then FA.Talents.Committed(arg1) end
     FA.Talents.Forget()
     if FA.Refresh then FA.Refresh() end
   end

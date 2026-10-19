@@ -2,6 +2,7 @@
 API stubbed: a build code read and written, the game's trait nodes turned into trees of cells, and the next-talent walk
 over a made-up talent tree. Run with `python test/run.py` (needs `pip install lupa`). The game's Lua is 5.1; LuaJIT's is
 used when lupa has it, else lupa's default."""
+import locale
 import os
 import sys
 import unittest
@@ -42,21 +43,38 @@ function GetTalentInfo(t, i)
   return x[1], "icon", x[2], x[3], x[4], x[5], false, true
 end
 
--- the trait system: node ids 101.., placed on a grid 600 apart, trees 4000 apart, the second tree listed first so
--- the group order comes from orderIndex, not the list
+-- the trait system: node ids 101.., placed on a grid, each tree's own: GRID[tab] = { x of column 1, column pitch, y of
+-- tier 1, row pitch }, by default 600 apart and trees 4000 apart. The second tree is listed first so the group order
+-- comes from orderIndex, not the list. EXTRA(tab, posX, posY, name) adds a node off the talent list, as a misplaced one.
 NODES, DEFS = {}, {}
-local id = 100
-for t, tab in ipairs(TREE) do for i, x in ipairs(tab) do
-  id = id + 1
-  NODES[id] = { tab = t, talent = x, posX = (t - 1) * 4000 + (x[3] - 1) * 600 + 300, posY = 1500 + (x[2] - 1) * 600 }
-  DEFS[id] = { spellID = id * 10, overrideName = nil }
-end end
+function NODES_FROM(grid)
+  NODES, DEFS = {}, {}
+  local id = 100
+  for t, tab in ipairs(TREE) do for i, x in ipairs(tab) do
+    id = id + 1
+    local g = grid and grid[t] or { (t - 1) * 4000 + 300, 600, 1500, 600 }
+    NODES[id] = { tab = t, talent = x, posX = g[1] + (x[3] - 1) * g[2], posY = g[3] + (x[2] - 1) * g[4] }
+    DEFS[id] = { spellID = id * 10, overrideName = nil }
+  end end
+end
+NODES_FROM()
+function EXTRA(tab, posX, posY, name)
+  local id = 900
+  while NODES[id] do id = id + 1 end
+  NODES[id] = { tab = tab, talent = { name, 1, 1, 0, 1 }, posX = posX, posY = posY }
+  DEFS[id] = { spellID = id * 10 }
+  return id
+end
 -- Config 7 is the active spec: its committed ranks are TREE's, and STAGED holds what's bought but not applied. Config 8
 -- is the other spec (dual spec), its ranks in OTHER. A rank can be bought with a point to spend, below the talent's
--- max, and with (tier - 1) * 5 points already in its tree, as the game's trees gate them.
+-- max, and with (tier - 1) * 5 points already in its tree, as the game's trees gate them. Config 99 is the Legacy
+-- Adventure tree (1188), where TALENTED is the rank of Talented (node 110298); false, and the game won't say.
+-- FAIL_COMMIT: true, CommitConfig says no; "late", it starts the cast and the test fails it with CONFIG_COMMIT_FAILED;
+-- "now", the game fails it inside the call. NO_ACTIVE: GetActiveConfigID answers nil, as it can early on. NO_CHANGE:
+-- why CanChangeTalents says no once something is staged (it says no before, as the client's docs say).
 STAGED, OTHER, LOG = {}, {}, {}
 SPEC = { active = 1, groups = 1 }
-COMBAT, FAIL_COMMIT = false, false
+COMBAT, FAIL_COMMIT, NO_ACTIVE, NO_CHANGE, TALENTED = false, false, false, false, 0
 local function rankOf(configID, nodeID)
   if configID == 8 then return OTHER[nodeID] or 0 end
   return NODES[nodeID].talent[4] + (STAGED[nodeID] or 0)
@@ -66,31 +84,39 @@ local function spentIn(configID, tab)
   for id, n in pairs(NODES) do if not tab or n.tab == tab then s = s + rankOf(configID, id) end end
   return s
 end
-function UNSPENT() return math.max(0, PLAYER.level - 9) - spentIn(7) end
+function UNSPENT() return math.max(0, PLAYER.level - 9 + (TALENTED or 0)) - spentIn(7) end
 C_ClassTalents = {
-  GetActiveConfigID = function() if API ~= "traits" then return nil end return SPEC.active == 1 and 7 or 8 end,
+  GetActiveConfigID = function() if API ~= "traits" or NO_ACTIVE then return nil end return SPEC.active == 1 and 7 or 8 end,
   CommitConfig = function(saved)
     LOG[#LOG + 1] = "commit"
+    if FAIL_COMMIT == "late" then return true end
+    if FAIL_COMMIT == "now" then ON_EVENT(nil, "CONFIG_COMMIT_FAILED", 7); return true end
     if FAIL_COMMIT then return false end
     for id, n in pairs(STAGED) do NODES[id].talent[4] = NODES[id].talent[4] + n end
     STAGED = {}
     return true
   end,
-  CanChangeTalents = function() return true, true, "" end,
+  CanChangeTalents = function()
+    if next(STAGED) == nil then return false, false, nil end
+    if NO_CHANGE then return false, false, NO_CHANGE end
+    return true, true, nil
+  end,
 }
 C_SpecializationInfo = {
   GetActiveSpecGroup = function() return SPEC.active end,
-  GetCombatConfigIDForSpecGroup = function(g) return g == 1 and 7 or 8 end,
+  GetCombatConfigIDForSpecGroup = function(g) if API ~= "traits" then return nil end return g == 1 and 7 or 8 end,
 }
 function GetNumSpecGroups() return SPEC.groups end
 function InCombatLockdown() return COMBAT end
 C_Traits = {
   GetConfigInfo = function(configID) return { ID = configID, treeIDs = { 55 }, name = "Primary" } end,
+  GetConfigIDByTreeID = function(treeID) if treeID == 1188 and TALENTED then return 99 end return nil end,
   GetGroupDisplayInfoByTreeID = function(treeID)
     return { { groupID = 20, orderIndex = 2, displayName = "Fury", icon = 2 }, { groupID = 10, orderIndex = 1, displayName = "Arms", icon = 1 }, { groupID = 30, orderIndex = 3, displayName = "Protection", icon = 3 } }
   end,
   GetTreeNodes = function(treeID) local ids = {} for k in pairs(NODES) do ids[#ids + 1] = k end table.sort(ids) return ids end,
   GetNodeInfo = function(configID, nodeID)
+    if configID == 99 then return nodeID == 110298 and { ID = nodeID, ranksPurchased = TALENTED, maxRanks = 5 } or nil end
     local n = NODES[nodeID]
     return { ID = nodeID, posX = n.posX, posY = n.posY, groupIDs = { n.tab * 10 }, entryIDs = { nodeID * 2 }, ranksPurchased = rankOf(configID, nodeID), maxRanks = n.talent[5] }
   end,
@@ -112,7 +138,9 @@ C_Spell = { GetSpellName = function(spellID) return NODES[spellID / 10].talent[1
 function UnitLevel() return PLAYER.level end
 function GetBuildInfo() return "1.60.1.70170", "70170", "Oct  2 2026", 16001 end   -- the build a code carries (#1215)
 function UnitClass() return "Warrior", PLAYER.class end
-function CreateFrame() return { RegisterEvent = function() end, SetScript = function() end } end
+-- the addon's event frame: ON_EVENT is its handler, for the tests to send it the game's events
+function CreateFrame() return { RegisterEvent = function() end, SetScript = function(_, k, fn) if k == "OnEvent" then ON_EVENT = fn end end } end
+function EVENT(name, ...) ON_EVENT(nil, name, ...) end
 SlashCmdList = {}
 DEFAULT_CHAT_FRAME = { AddMessage = function(_, text) PRINTED = (PRINTED or "") .. text .. "\n" end }
 FA = {}
@@ -132,8 +160,9 @@ function RESET(api)
   API = api or "traits"
   ForeverArmouryDB, ForeverArmouryCharDB = nil, nil; FA.Init(); FA.Talents.Forget(); PLAYER.level = 60
   for _, tab in ipairs(TREE) do for _, t in ipairs(tab) do t[4] = 0 end end
-  STAGED, OTHER, LOG = {}, {}, {}
-  SPEC.active, SPEC.groups, COMBAT, FAIL_COMMIT = 1, 1, false, false
+  NODES_FROM()
+  STAGED, OTHER, LOG, PRINTED = {}, {}, {}, ""
+  SPEC.active, SPEC.groups, COMBAT, FAIL_COMMIT, NO_ACTIVE, NO_CHANGE, TALENTED = 1, 1, false, false, false, false, 0
 end
 -- a node's id by tree and talent index, for setting OTHER
 function NODE(tab, index) for id, n in pairs(NODES) do if n.tab == tab and n.talent == TREE[tab][index] then return id end end end
@@ -195,6 +224,32 @@ class BuildCode(unittest.TestCase):
         self.assertEqual(build("FAT2-70170-warrior-A-0a"), 70170)
         self.assertEqual(build("FAT2-70009-warrior-A-0a"), 70009)
         self.assertIsNone(build("FAT1-warrior-A-0a"))
+
+    def test_write_with_a_build(self):
+        write = L.eval("function(build) return FA.Code.Write({ { cls = 'warrior', name = 'A', picks = '0a' } }, build) end")
+        self.assertEqual(write(70009), "FAT2-70009-warrior-A-0a")
+        self.assertEqual(write(None), "FAT2-70170-warrior-A-0a")   # the game's
+        self.assertEqual(write(False), "FAT1-warrior-A-0a")       # from before codes carried one
+
+    def test_names_encode_the_same_under_every_locale(self):
+        # %w follows the C locale, and under a UTF-8 one takes bytes above 127 for letters: Python sets LC_CTYPE from
+        # the environment at start, so a run without LC_ALL=C has one. Each UTF-8 locale this machine has is tried.
+        write = L.eval("function(name) return FA.Code.Write({ { cls = 'warrior', name = name, picks = '0a' } }) end")
+        before = locale.setlocale(locale.LC_CTYPE)
+        tried = []
+        try:
+            for name in ["C", "en_US.UTF-8", "C.UTF-8", "de_DE.UTF-8", "fr_FR.UTF-8", "ja_JP.UTF-8"]:
+                try:
+                    locale.setlocale(locale.LC_CTYPE, name)
+                except locale.Error:
+                    continue
+                tried.append(name)
+                self.assertEqual(write("Ünï 名"), "FAT2-70170-warrior-%C3%9Cn%C3%AF%20%E5%90%8D-0a", name)
+                builds, _ = self.builds("FAT2-70170-warrior-A-0a—and more")   # a code with a dash of another script after it
+                self.assertEqual(builds, [("warrior", "A", "0a")], name)
+        finally:
+            locale.setlocale(locale.LC_CTYPE, before)
+        self.assertIn("C", tried)
 
     def test_errors(self):
         def say(text):
@@ -269,6 +324,56 @@ class Talents(unittest.TestCase):
         self.assertIn("hasn't given its talents", why)
         L.run("RESET('traits')")
 
+    def test_each_tree_has_its_own_grid(self):
+        # Protection drawn closer: with the smallest gap of all three trees, Arms and Fury would sort on its spacing
+        L.run("RESET('traits'); NODES_FROM({ { 300, 600, 1500, 600 }, { 4300, 600, 1500, 600 }, { 8300, 500, 1400, 450 } }); FA.Talents.Forget()")
+        self.check_trees()
+
+    def test_an_off_grid_node_only_touches_its_own_tree(self):
+        L.run("RESET('traits'); NODES[NODE(3, 2)].posX = NODES[NODE(3, 2)].posX + 300; FA.Talents.Forget()")
+        self.assertRegex(self.at(1, 1), r"^Deflection 1,2")
+        self.assertRegex(self.at(1, 11), r"^Sweeping Strikes 3,4")
+        self.assertRegex(self.at(2, 2), r"^Cruelty 1,3")
+        dropped = L.eval("function() local out = {} for _, d in ipairs(FA.Talents.View().dropped[3]) do out[#out + 1] = d.talent.name end return table.concat(out, ',') end")()
+        # Protection's step halves, so its third and fourth columns land past the fourth, and chat says so
+        self.assertEqual(dropped, "Anticipation,Last Stand")
+        self.assertIn("2 talents didn't sort into the trees", L.eval("PRINTED"))
+        L.run("RESET('traits')")
+
+    def test_the_active_config_falls_back_to_the_spec_group(self):
+        L.run("RESET('traits'); NO_ACTIVE = true")
+        self.check_trees()
+        self.assertEqual(L.eval("FA.Talents.View().configID"), 7)
+        ok, said = L.eval("function() return FA.Apply({ picks = '010101' }) end")()   # check_trees left two in Deflection
+        self.assertTrue(ok, said)
+        self.assertEqual(L.eval("UNSPENT()"), 48)
+        L.run("RESET('traits')")
+
+    def test_talents_left_out_are_reported(self):
+        L.run("RESET('traits')")
+        stray = L.eval("EXTRA(1, 300 + 4 * 600, 1500, 'Stray')")         # Arms, column 5
+        twin = L.eval("EXTRA(1, 900, 1500, 'Twin')")                       # on Deflection's cell
+        deep = L.eval("EXTRA(3, 8300, 1500 + 7 * 600, 'Deep')")            # Protection, row 8
+        L.run("FA.Talents.Forget()")
+        self.check_trees()                                                  # the rest sorts as before
+        dropped = L.eval("function(t) local out = {} for _, d in ipairs(FA.Talents.View().dropped[t]) do out[#out + 1] = d.talent.name .. ': ' .. d.why end return table.concat(out, '; ') end")
+        self.assertEqual(dropped(1), "Stray: column 5, outside the four; Twin: on 1,2 with Deflection (node 101)")
+        self.assertEqual(dropped(2), "")
+        self.assertEqual(dropped(3), "Deep: row 8, below the seventh")
+        self.assertIn("3 talents didn't sort into the trees, so builds can't use them. /fa debug lists them.", L.eval("PRINTED"))
+        lines = list(L.eval("FA.Talents.Dump()").values())
+        self.assertEqual(lines[0], "1. Arms")
+        self.assertEqual(lines[1], "   columns 600 apart from x 300 (a full tree's leftmost talent), rows 600 apart from y 1500")
+        self.assertIn("   1,2 (1) Deflection 2/5 at 900,1500, node 101", lines)   # check_trees spent two
+        self.assertIn("   left out: 1,5 Stray 0/1 at 2700,1500, node %d: column 5, outside the four" % stray, lines)
+        self.assertIn("   left out: 1,2 Twin 0/1 at 900,1500, node %d: on 1,2 with Deflection (node 101)" % twin, lines)
+        self.assertIn("   left out: 8,1 Deep 0/1 at 8300,5700, node %d: row 8, below the seventh" % deep, lines)
+        self.assertIn("   columns 600 apart from x 4300 (from the full trees' spacing), rows 600 apart from y 1500 (rows spaced as another tree's)", lines)
+        self.assertEqual(lines[-1], "3 talents left out, marked above.")
+        L.run("RESET('traits')")
+        lines = list(L.eval("FA.Talents.Dump()").values())
+        self.assertEqual(lines[-1], "Every talent has a cell of its own.")
+
 
 class Builds(unittest.TestCase):
     def setUp(self):
@@ -282,13 +387,32 @@ class Builds(unittest.TestCase):
         # the same name again replaces the points and keeps the id
         self.assertEqual(add("FAT1-warrior-Arms-010102"), (1, 0))
         self.assertEqual(names(), "1=Arms:010102 2=Fury:1a1a")
-        self.assertEqual(L.eval("FA.ExportCode()"), "FAT2-70170-warrior-Arms-010102.warrior-Fury-1a1a")
+        self.assertEqual(L.eval("FA.ExportCode()"), "FAT1-warrior-Arms-010102.warrior-Fury-1a1a")   # FAT1- in, FAT1- out
         L.run("FA.SetActive(2)")
         self.assertEqual(L.eval("FA.ActiveBuild().name"), "Fury")
         self.assertTrue(L.eval("FA.ForgetBuild('warrior', 2)"))
         self.assertIsNone(L.eval("FA.ActiveBuild()"))
         self.assertEqual(names(), "1=Arms:010102")
         self.assertFalse(L.eval("FA.ForgetBuild('warrior', 9)"))
+
+    def test_import_keeps_each_builds_game_build(self):
+        add = L.eval("function(text) local b = assert(FA.Code.Read(text)); return FA.AddBuilds(b) end")
+        add("FAT2-70009-warrior-Arms-0101.warrior-Prot-2121 FAT2-70170-warrior-Fury-1a1a FAT1-warrior-Old-0202")
+        builds = L.eval("function() local out = {} for _, b in ipairs(FA.BuildsFor('warrior')) do out[#out + 1] = b.name .. '@' .. tostring(b.build) end return table.concat(out, ' ') end")
+        self.assertEqual(builds(), "Arms@70009 Prot@70009 Fury@70170 Old@false")
+        # a code per game build, a line each, in the order the first of each comes
+        self.assertEqual(L.eval("FA.ExportCode()").split("\n"), [
+            "FAT2-70009-warrior-Arms-0101.warrior-Prot-2121", "FAT2-70170-warrior-Fury-1a1a", "FAT1-warrior-Old-0202"])
+        # Export reads back as it came: every build, each with its build
+        back = L.eval("function() local out = {} for _, b in ipairs(assert(FA.Code.Read(FA.ExportCode()))) do out[#out + 1] = b.name .. '@' .. tostring(b.build) end return table.concat(out, ' ') end")
+        self.assertEqual(back(), "Arms@70009 Prot@70009 Fury@70170 Old@nil")
+        # pasting Arms again from the game's build moves it to that build's code
+        add("FAT2-70170-warrior-Arms-010101")
+        self.assertEqual(L.eval("FA.ExportCode()").split("\n"), [
+            "FAT2-70170-warrior-Arms-010101.warrior-Fury-1a1a", "FAT2-70009-warrior-Prot-2121", "FAT1-warrior-Old-0202"])
+        # a build kept before builds were (0.2) is the game's, in the game build's code
+        L.run("table.insert(FA.BuildsFor('warrior'), { id = 99, name = 'Kept', picks = '0303' })")
+        self.assertEqual(L.eval("FA.ExportCode()").split("\n")[0], "FAT2-70170-warrior-Arms-010101.warrior-Fury-1a1a.warrior-Kept-0303")
 
     def progress(self, picks):
         return L.eval("function(picks) local p, why = FA.Progress({ picks = picks }); if not p then return nil, why end "
@@ -325,6 +449,27 @@ class Builds(unittest.TestCase):
         self.assertEqual((p.due, p.n, p.level), (2, 1, 10))
         L.run("PLAYER.level = 5")
         self.assertEqual(self.progress("010101").due, 0)
+
+    def test_talented_moves_the_first_point_earlier(self):
+        self.assertEqual(L.eval("FA.FirstLevel()"), 10)
+        L.run("TALENTED = 3; PLAYER.level = 8")   # three ranks: the first point at level 7
+        self.assertEqual(L.eval("FA.TalentedRank()"), 3)
+        p = self.progress("010101")
+        self.assertEqual((p.due, p.n, p.level), (2, 1, 7))
+        L.run("TALENTED = 5; PLAYER.level = 5")
+        self.assertEqual(self.progress("010101").due, 1)
+        names = L.eval("function() local list = assert(FA.PlanApply({ picks = '010101' })); return #list end")()
+        self.assertEqual(names, 1)
+        L.run("TALENTED = false")                 # the game won't say: no ranks
+        self.assertEqual(L.eval("FA.FirstLevel()"), 10)
+        self.assertEqual(self.progress("010101").due, 0)
+
+    def test_the_trainer_reset_counts_talented(self):
+        L.run("FA.AddBuilds(assert(FA.Code.Read('FAT2-70170-warrior-Arms-" + GATED + "'))); FA.SetActive(1)")
+        L.run("PLAYER.level = 12; TALENTED = 5; EVENT('CONFIRM_TALENT_WIPE')")
+        self.assertIn("it spends 8 points as Arms says", L.eval("PRINTED"))
+        L.run("PRINTED = ''; TALENTED = 0; EVENT('CONFIRM_TALENT_WIPE')")
+        self.assertIn("it spends 3 points as Arms says", L.eval("PRINTED"))
 
     def test_a_cell_with_no_talent_is_refused(self):
         p, why = L.eval("function() local p, why = FA.Progress({ picks = '00' }); return p, why end")()
@@ -401,6 +546,52 @@ class Apply(unittest.TestCase):
         self.assertIn("wouldn't apply", why)
         self.assertEqual(self.log()[-1], "rollback")
         self.assertEqual(L.eval("FA.Talents.Spent()"), 0)
+
+    def test_the_game_is_asked_whether_talents_can_change_once_a_point_is_staged(self):
+        # CanChangeTalents is false with nothing staged, as the client's docs say: Apply doesn't ask it then
+        self.assertEqual(L.eval("C_ClassTalents.CanChangeTalents()"), (False, False, None))
+        self.assertTrue(L.eval("FA.Talents.CanChange()"))
+        ok, said = self.apply(GATED)
+        self.assertTrue(ok, said)
+        # and once a point is staged, its no stops Apply before the commit
+        L.run("RESET('traits'); NO_CHANGE = 'You can only change talents in a rested area'")
+        ok, why = self.apply(GATED)
+        self.assertFalse(ok)
+        self.assertEqual(why, "You can only change talents in a rested area. Nothing was spent.")
+        self.assertEqual(self.log(), ["buy Deflection", "rollback"])
+        self.assertEqual(L.eval("FA.Talents.Spent()"), 0)
+
+    def test_a_late_commit_failure_is_rolled_back(self):
+        # CommitConfig starts the cast; the game fails it after
+        L.run("FAIL_COMMIT = 'late'")
+        ok, _ = self.apply(GATED)
+        self.assertTrue(ok)
+        self.assertTrue(L.eval("next(STAGED) ~= nil"))
+        L.run("EVENT('CONFIG_COMMIT_FAILED', 7)")
+        self.assertEqual(self.log()[-1], "rollback")
+        self.assertFalse(L.eval("next(STAGED) ~= nil"))
+        self.assertEqual(L.eval("FA.Talents.Spent()"), 0)
+        self.assertIn("The game didn't apply the talents, so they were rolled back. Nothing was spent.", L.eval("PRINTED"))
+        # a failure of the window's own commit, with none of the addon's casting, is the window's
+        L.run("PRINTED = ''; STAGED[NODE(1, 1)] = 1; EVENT('CONFIG_COMMIT_FAILED', 7)")
+        self.assertEqual(self.log().count("rollback"), 1)
+        self.assertTrue(L.eval("next(STAGED) ~= nil"))
+        self.assertNotIn("rolled back", L.eval("PRINTED"))
+
+    def test_a_commit_that_went_through_isnt_rolled_back(self):
+        ok, _ = self.apply(GATED)
+        self.assertTrue(ok)
+        L.run("EVENT('TRAIT_CONFIG_UPDATED', 7); STAGED[NODE(1, 1)] = 1; EVENT('CONFIG_COMMIT_FAILED', 7)")
+        self.assertNotIn("rollback", self.log())
+
+    def test_a_commit_the_game_fails_at_once_is_said_once(self):
+        L.run("FAIL_COMMIT = 'now'")
+        ok, why = self.apply(GATED)
+        self.assertFalse(ok)
+        self.assertIn("wouldn't apply", why)
+        self.assertEqual(self.log().count("rollback"), 1)
+        self.assertEqual(L.eval("FA.Talents.Spent()"), 0)
+        self.assertNotIn("rolled back", L.eval("PRINTED"))
 
     def test_apply_refuses_points_off_the_build(self):
         L.run("TREE[3][1][4] = 2; FA.Talents.Forget()")
@@ -546,7 +737,7 @@ class UI(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("isn't a build code", err)
         L.run("FA.ImportText('FAT1-warrior-Arms-0101.mage-Frost-0a'); FA.OpenImport(FA.ExportCode())")
-        self.assertEqual(L.eval("ForeverArmouryImportText.text"), "FAT2-70170-warrior-Arms-0101")
+        self.assertEqual(L.eval("ForeverArmouryImportText.text"), "FAT1-warrior-Arms-0101")
 
     def test_the_part_switch_hides_the_panel(self):
         L.run("FA.SetPart('plan', false)")
