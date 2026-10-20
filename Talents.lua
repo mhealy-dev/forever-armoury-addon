@@ -29,6 +29,7 @@
      FA.Talents.Learn(list)          spends a rank in each talent of a list, in order, all or none: true, or false and why
      FA.Talents.CommitFailed(cfg)    CONFIG_COMMIT_FAILED: rolls back the addon's commit, true when it was the addon's
      FA.Talents.Committed(cfg)       TRAIT_CONFIG_UPDATED: the addon's commit went through
+     FA.Talents.Game(path, ...)      calls a function of the game by name ("C_Traits.GetNodeInfo"): nil, and one line in chat, if it has none
      FA.Talents.Forget()             drop what's cached: the next call asks the game again (called when points change)
      FA.Talents.Frame() / Window()   the talent window's frame and the window the panel sits on, once loaded
      FA.Talents.Button(t)            the window's button for a talent, or nil (the panel lights it)
@@ -54,12 +55,13 @@ local function game(path, ...)
   if type(fn) ~= "function" then
     if not missing[path] then
       missing[path] = true
-      FA.Print("This client has no " .. path .. ", so the addon can't use it for your talents.")
+      FA.Print("This client has no " .. path .. ", so the addon can't use it.")
     end
     return nil
   end
   return fn(...)
 end
+Talents.Game = game   -- the Legacy part (Legacy.lua) calls the same trait functions through it
 
 local function hasTraits() return C_Traits and C_ClassTalents and C_ClassTalents.GetActiveConfigID and true or false end
 --[[ The active spec's config. GetActiveConfigID can be nil early on, and the game's own window then takes the active

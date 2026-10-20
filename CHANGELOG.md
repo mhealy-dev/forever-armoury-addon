@@ -2,6 +2,16 @@
 
 ## 0.5.0 (unreleased)
 
+Legacy plans (forever-armoury #1567, from #1566):
+
+- **`FAL1-` codes**: the site's Legacy tab writes a Legacy plan as `FAL1-<build>-<name>-<ranks>` (`FAL1-70425-Gatherer%27s%20Path-150000000051000000030001000`): the client build the perks' order is from, the plan's name as a build's, and 27 base-36 digits, one rank a perk, tree by tree. The import box reads them beside build and gear codes (one paste can hold all three), says what came of each, and Export gives the account's Legacy plans back as `FAL1-` codes, one line a build.
+- **Legacy plans are the account's**, as Legacy is: kept once for every character, one followed for the account, checked at load like builds (one whose ranks don't read is dropped, a missing name, build or id repaired, with a line in chat saying so).
+- **A panel beside the Legacy window** (`LegacySystemFrame`, loaded on demand): the account's plans (click to follow, **x** to forget, arrows and wheel to scroll), the followed plan's perks with the ranks you have and the plan wants, the Legacy points available against the seasonal cap, and the next perk, named and lit in the window's tree with the same glow the talents have (the window shows one tree at a time, so the next perk of the tree on show lights).
+- **Apply buys the plan across the three trees**: one confirm naming the perks, then, tree by tree, `C_Traits.PurchaseRank` for each rank in an order the game takes (by row, a perk's prerequisite full and its tree's points spent first) and `C_Traits.CommitConfig` for the tree. It's all or none in each tree: a refused purchase or a failed commit, at once or later (`CONFIG_COMMIT_FAILED`), rolls that tree back and leaves the others. It stops at the points you have and the seasonal cap, never refunds, and won't start in combat or while the Legacy window has changes of its own waiting. The button says how many ranks it would buy, or why it can't.
+- **A plan from another client build is shown, never bought**: the addon's table of the 27 perks is of build 1.60.1.70425, so a code from another build, whose places in the ranks may mean other perks, is marked in the list and the panel says so.
+- **`/fa legacy`** opens the Legacy window on its trees with the panel beside it, **`/fa legacy on|off`** and a switch on the settings page turn the part on and off.
+- Behind it: `LegacyCode.lua`, `Legacy.lua` and `LegacyUI.lua`; `BuildCode.lua` shares its name helpers, `Talents.lua` its guard for trait functions the client may lack (`FA.Talents.Game`), and `TalentUI.lua` its glow (`FA.LightButtons`).
+
 The Talented rank in the build code (forever-armoury #1540):
 
 - **`FAT3-` codes**: each build ends with its rank of the Legacy perk Talented, one digit 0 to 5 (`FAT3-70170-warrior-Arms%20PvP-0a0a0a0b0b0b1c1c-3`), as the site now writes them. `FAT1-` and `FAT2-` codes still read, with rank 0. A rank that isn't 0 to 5 is refused with a sentence, as the site does.

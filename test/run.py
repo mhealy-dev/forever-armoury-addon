@@ -1,7 +1,8 @@
-"""Checks the addon's pure parts, BuildCode.lua, Talents.lua, Builds.lua, GearCode.lua and Gear.lua, in a Lua runtime
-with the game's talent, item and bag APIs stubbed: a build code and a gear route code read and written, the game's trait
-nodes turned into trees of cells, the next-talent walk over a made-up talent tree, and the next pieces of a gear route
-against what the character wears and carries. Run with `python test/run.py` (needs `pip install lupa`). The game's Lua
+"""Checks the addon's pure parts, BuildCode.lua, Talents.lua, Builds.lua, GearCode.lua, Gear.lua, LegacyCode.lua and
+Legacy.lua, in a Lua runtime with the game's talent, Legacy, item and bag APIs stubbed: a build code, a gear route code and
+a Legacy plan code read and written, the game's trait nodes turned into trees of cells, the next-talent walk over a made-up
+talent tree, the next pieces of a gear route against what the character wears and carries, and a Legacy plan bought across
+the three Legacy trees' configs. Run with `python test/run.py` (needs `pip install lupa`). The game's Lua
 is 5.1; LuaJIT's is used when lupa has it, else lupa's default."""
 import locale
 import os
@@ -134,6 +135,79 @@ C_Traits = {
   end,
   RollbackConfig = function(configID) LOG[#LOG + 1] = "rollback"; STAGED = {} end,
 }
+-- The Legacy trees (account-wide): with LEGACY_ON, GetConfigIDByTreeID gives trees 1187, 1188 and 1189 configs 201, 202
+-- and 203, whose nodes are the 27 perks (structure from the addon's own table). LEG[node] is a perk's committed rank,
+-- LSTAGED[config][node] what's bought and not applied, LPOINTS the points available (nil: the game says nothing) and
+-- LCAP the most that can be spent in all. A rank is bought as the game's rules have it: not a locked perk, not past the
+-- perk's max, its prerequisite full first, its need of points on the tree's other perks met (unless begun), a point to
+-- spend (staged ones count), under the cap. LREFUSE is a node the game turns down; LFAIL_COMMIT is false, or true (the
+-- commit says no), or "late" (it starts the cast, the test fails it with CONFIG_COMMIT_FAILED), or "now" (the game fails
+-- it inside the call), or a config's number for that tree's commit alone.
+LEGACY_ON, LEG, LSTAGED, LPOINTS, LCAP, LREFUSE, LFAIL_COMMIT = false, {}, {}, 16, 16, nil, false
+LCONFIG = { [1187] = 201, [1188] = 202, [1189] = 203 }
+LTREE = { [201] = 1187, [202] = 1188, [203] = 1189 }
+local base = {}
+for k, v in pairs(C_Traits) do base[k] = v end
+local function perkOf(configID, nodeID)
+  for i, p in ipairs(FA.Legacy.PERKS) do if p.node == nodeID and p.tree == LTREE[configID] then return p, i end end
+end
+local function lrank(configID, nodeID) return (LEG[nodeID] or 0) + ((LSTAGED[configID] or {})[nodeID] or 0) end
+local function lstaged() local n = 0 for _, st in pairs(LSTAGED) do for _, k in pairs(st) do n = n + k end end return n end
+local function lspent() local n = 0 for _, k in pairs(LEG) do n = n + k end return n + lstaged() end
+function LAVAILABLE() return LPOINTS and (LPOINTS - lstaged()) end
+function C_Traits.GetConfigIDByTreeID(treeID) if LEGACY_ON and LCONFIG[treeID] then return LCONFIG[treeID] end return base.GetConfigIDByTreeID(treeID) end
+function C_Traits.GetNodeInfo(configID, nodeID)
+  if not LTREE[configID] then return base.GetNodeInfo(configID, nodeID) end
+  local p = perkOf(configID, nodeID)
+  return p and { ID = nodeID, ranksPurchased = lrank(configID, nodeID), maxRanks = p.max } or nil
+end
+function C_Traits.GetTreeCurrencyInfo(configID, treeID, excludeStaged)
+  if not LTREE[configID] then return base.GetTreeCurrencyInfo(configID, treeID, excludeStaged) end
+  if not LPOINTS then return {} end
+  return { { traitCurrencyID = 4225, quantity = LAVAILABLE(), maxQuantity = LCAP, spentInTree = 0 } }
+end
+function C_Traits.ConfigHasStagedChanges(configID)
+  if not LTREE[configID] then return base.ConfigHasStagedChanges(configID) end
+  return next(LSTAGED[configID] or {}) ~= nil
+end
+function C_Traits.PurchaseRank(configID, nodeID)
+  if not LTREE[configID] then return base.PurchaseRank(configID, nodeID) end
+  local p, i = perkOf(configID, nodeID)
+  local ok = p and not p.locked and nodeID ~= LREFUSE and lrank(configID, nodeID) < p.max and (LAVAILABLE() or 1) > 0 and lspent() < LCAP
+  if ok and p.afterIndex then ok = lrank(configID, FA.Legacy.PERKS[p.afterIndex].node) >= FA.Legacy.PERKS[p.afterIndex].max end
+  if ok and p.need > 0 and lrank(configID, nodeID) == 0 then
+    local others = 0
+    for _, q in ipairs(FA.Legacy.PERKS) do if q.tree == p.tree and q ~= p then others = others + lrank(configID, q.node) end end
+    ok = others >= p.need
+  end
+  LOG[#LOG + 1] = (ok and "buy " or "refused ") .. (p and p.name or nodeID)
+  if ok then LSTAGED[configID] = LSTAGED[configID] or {}; LSTAGED[configID][nodeID] = (LSTAGED[configID][nodeID] or 0) + 1 end
+  return ok
+end
+function C_Traits.RollbackConfig(configID)
+  if not LTREE[configID] then return base.RollbackConfig(configID) end
+  LOG[#LOG + 1] = "rollback " .. LTREE[configID]
+  LSTAGED[configID] = nil
+end
+function C_Traits.CommitConfig(configID)
+  LOG[#LOG + 1] = "commit " .. tostring(LTREE[configID] or configID)
+  if LFAIL_COMMIT == "late" then return true end
+  if LFAIL_COMMIT == "now" then ON_EVENT(nil, "CONFIG_COMMIT_FAILED", configID); return true end
+  if LFAIL_COMMIT == true or LFAIL_COMMIT == configID then return false end
+  for node, n in pairs(LSTAGED[configID] or {}) do LEG[node] = (LEG[node] or 0) + n; LPOINTS = LPOINTS and (LPOINTS - n) end
+  LSTAGED[configID] = nil
+  return true
+end
+-- a plan's ranks from perk names: LRANKS{ ["Master Chef"] = 1, ... } as the code's 27 characters
+function LPLAN(byName)
+  local out = {}
+  for i, p in ipairs(FA.Legacy.PERKS) do out[i] = string.format("%d", byName[p.name] or 0) end
+  return table.concat(out)
+end
+-- the account's ranks, by name, committed
+function LSET(byName) for _, p in ipairs(FA.Legacy.PERKS) do if byName[p.name] then LEG[p.node] = byName[p.name] end end end
+function LRANKSOF(name) for _, p in ipairs(FA.Legacy.PERKS) do if p.name == name then return LEG[p.node] or 0 end end end
+
 C_Spell = { GetSpellName = function(spellID) return NODES[spellID / 10].talent[1] end, GetSpellTexture = function(spellID) return spellID end }
 
 function UnitLevel() return PLAYER.level end
@@ -189,6 +263,8 @@ file("Talents.lua")
 file("Builds.lua")
 file("GearCode.lua")
 file("Gear.lua")
+file("LegacyCode.lua")
+file("Legacy.lua")
 ForeverArmouryDB, ForeverArmouryCharDB = nil, nil
 FA.Init()
 FA.class = "warrior"
@@ -202,6 +278,7 @@ function RESET(api)
   SPEC.active, SPEC.groups, COMBAT, FAIL_COMMIT, NO_ACTIVE, NO_CHANGE, TALENTED, BONUS = 1, 1, false, false, false, false, 0, 0
   REGISTERED, BAD_EVENTS = {}, {}
   FACTION, EQUIPPED, BAGS, ITEMS = "Alliance", {}, {}, {}
+  LEGACY_ON, LEG, LSTAGED, LPOINTS, LCAP, LREFUSE, LFAIL_COMMIT = false, {}, {}, 16, 16, nil, false
 end
 -- a node's id by tree and talent index, for setting OTHER
 function NODE(tab, index) for id, n in pairs(NODES) do if n.tab == tab and n.talent == TREE[tab][index] then return id end end end
@@ -1422,9 +1499,541 @@ Settings = { RegisterCanvasLayoutCategory = function() return frame() end, Regis
 -- the captions the slider template gives its slider (the template names them $parentLow and so on): the first slider's
 -- are here and the second's aren't, so the settings page is tried with a template that has them and one that doesn't
 ForeverArmouryStripPastLow, ForeverArmouryStripPastHigh, ForeverArmouryStripPastText = frame(), frame(), frame()
+-- the Legacy window: its tree panel shows one tree (LSHOWN_TREE) and has a button for that tree's perks only, pooled by
+-- node as the talent window's are; LBUTTONS[node] is the button. ToggleLegacySystemUI opens or closes the window.
+LegacySystemFrame = frame("LegacySystemFrame")
+LegacySystemFrame.TreePage = { LegacyTreeTraitPanel = frame("LegacyTreeTraitPanel") }
+LBUTTONS, LSHOWN_TREE = {}, 1187
+LegacySystemFrame.TreePage.LegacyTreeTraitPanel.GetTalentButtonByNodeID = function(self, nodeID)
+  for _, p in ipairs(FA.Legacy.PERKS) do
+    if p.node == nodeID and p.tree == LSHOWN_TREE then LBUTTONS[nodeID] = LBUTTONS[nodeID] or frame(); return LBUTTONS[nodeID] end
+  end
+  return nil
+end
+ToggleLegacySystemUI = function()
+  LTOGGLED = (LTOGGLED or 0) + 1
+  if LegacySystemFrame.shown == false then LegacySystemFrame:Show() else LegacySystemFrame:Hide() end
+end
 CharacterFrame = frame("CharacterFrame")
 ToggleCharacter = function() TOGGLED = (TOGGLED or 0) + 1 end
 """
+
+
+def lua_table(d):
+    """A dict of perk name -> rank as the Lua table literal the stub's LPLAN and LSET take."""
+    return "{ " + ", ".join('["%s"] = %d' % (k, v) for k, v in d.items()) + " }"
+
+
+SAMPLE = "FAL1-70425-Gatherer%27s%20Path-150000000051000000030001000"   # forever-armoury PR 1585, byte for byte
+SAMPLE_RANKS = "150000000051000000030001000"
+SAMPLE_2 = "FAL1-70425-Second-" + "0" * 19 + "1" + "0" * 7                                      # Gourmand, one rank
+GATHERER = {"Master Chef": 1, "Working Overtime": 5, "Well Rested": 5, "Talented": 1, "Gourmand": 3, "The Quick and the Dead": 1}
+
+
+class LegacyCode(unittest.TestCase):
+    """LegacyCode.lua: a Legacy plan code as the site's public/content/legacy-code.js writes it (forever-armoury #1566)."""
+
+    def setUp(self):
+        L.run("RESET('traits')")
+
+    def read(self, text):
+        return L.eval("""function(t)
+          local plans, err, notes = FA.LegacyCode.Read(t)
+          if not plans then return nil, err, '' end
+          local out = {}
+          for i, p in ipairs(plans) do out[i] = p.name .. '|' .. p.ranks .. '|' .. p.build end
+          return table.concat(out, '\\n'), nil, table.concat(notes, '\\n')
+        end""")(text)
+
+    def plans(self, text):
+        got, err, notes = self.read(text)
+        self.assertIsNone(err, text)
+        return got.split("\n"), notes
+
+    def error(self, text):
+        got, err, _ = self.read(text)
+        self.assertIsNone(got, text)
+        return err
+
+    def write(self, name, ranks=SAMPLE_RANKS, build=None):
+        return L.eval("function(name, ranks, build) return FA.LegacyCode.Write({ { name = name, ranks = ranks } }, build) end")(name, ranks, build)
+
+    def test_the_sites_sample_reads_and_writes_byte_for_byte(self):
+        self.assertEqual(self.plans(SAMPLE), (["Gatherer's Path|" + SAMPLE_RANKS + "|70425"], ""))
+        self.assertEqual(self.write("Gatherer's Path"), SAMPLE)
+        write = L.eval("function(t) return FA.LegacyCode.Write(assert(FA.LegacyCode.Read(t))) end")
+        self.assertEqual(write(SAMPLE), SAMPLE)
+
+    def test_round_trips_names_and_an_empty_plan(self):
+        for name in ["Gatherer's Path", "", "Mage's build, 31/0/20!", "Ünïcödé 🙂 名前", "a" * 40, "50% crit", "-leading-dashes-", "dots.in.name", "  Two   words "]:
+            code = self.write(name)
+            self.assertRegex(code, r"^FAL1-70425-[A-Za-z0-9%]*-[0-9a-z]{27}$", name)
+            self.assertEqual(self.plans(code), (["%s|%s|70425" % (" ".join(name.split()), SAMPLE_RANKS)], ""), name)
+        empty = "0" * 27
+        self.assertEqual(self.write("", empty), "FAL1-70425--" + empty)
+        self.assertEqual(self.plans("FAL1-70425--" + empty), (["|" + empty + "|70425"], ""))
+        # every character a chat would format comes out as %XX, and a name with spaces keeps one
+        code = self.write("*bold* _it_ ||spoil|| `c` [a](b) https://a.b/c é 🙂")
+        self.assertRegex(code, r"^FAL1-70425-[A-Za-z0-9%]*-[0-9a-z]{27}$")
+
+    def test_write_with_a_build(self):
+        self.assertEqual(self.write("A", SAMPLE_RANKS, 70001), "FAL1-70001-A-" + SAMPLE_RANKS)
+        self.assertEqual(self.plans("FAL1-70001-A-" + SAMPLE_RANKS)[0], ["A|" + SAMPLE_RANKS + "|70001"])
+        write = L.eval("function(a, b) return FA.LegacyCode.Write({ { name = 'A', ranks = a }, { name = 'B', ranks = b } }) end")
+        self.assertEqual(write(SAMPLE_RANKS, "0" * 27), "FAL1-70425-A-" + SAMPLE_RANKS + ".B-" + "0" * 27)
+
+    def test_the_writer_refuses_ranks_without_the_shape(self):
+        for bad in ["", "0" * 26, "0" * 28, "A" * 27, "0" * 26 + "-", "0" * 26 + "%"]:
+            code, why = L.eval("function(r) return FA.LegacyCode.Write({ { name = 'A', ranks = r } }) end")(bad)
+            self.assertIsNone(code, bad)
+            self.assertIn("doesn't have 27 ranks", why)
+
+    def test_a_long_name_is_cut_to_40_characters_with_a_note(self):
+        got, notes = self.plans("FAL1-70425-" + "a" * 50 + "-" + SAMPLE_RANKS)
+        self.assertEqual(got, ["a" * 40 + "|" + SAMPLE_RANKS + "|70425"])
+        self.assertEqual(notes, "The name of plan 1 was cut to 40 characters.")
+        self.assertEqual(self.plans("FAL1-70425-" + "%C3%A9" * 50 + "-" + SAMPLE_RANKS)[0], ["é" * 40 + "|" + SAMPLE_RANKS + "|70425"])
+        self.assertEqual(self.plans("FAL1-70425-" + "a" * 40 + "-" + SAMPLE_RANKS)[1], "")
+        self.assertEqual(self.write("a" * 60), "FAL1-70425-" + "a" * 40 + "-" + SAMPLE_RANKS)
+
+    def test_a_paste_around_the_code(self):
+        for pasted in [SAMPLE, "  " + SAMPLE + "\n", "`" + SAMPLE + "`", "here: " + SAMPLE + ". Enjoy!", "<" + SAMPLE + ">", "\"" + SAMPLE + "\"",
+                       "Plan\n" + SAMPLE + "\nthanks", "**" + SAMPLE + "**", "here it is - " + SAMPLE + "-", SAMPLE + ".-.-"]:
+            self.assertEqual(self.plans(pasted)[0], ["Gatherer's Path|" + SAMPLE_RANKS + "|70425"], pasted)
+
+    def test_several_plans_in_one_code_or_in_a_paste(self):
+        fisher = "0000" + "5" + "0" * 22
+        one = "FAL1-70425-Gatherer%27s%20Path-" + SAMPLE_RANKS + ".Fisher-" + fisher + "." + "-" + "0" * 27
+        self.assertEqual(self.plans(one)[0], ["Gatherer's Path|%s|70425" % SAMPLE_RANKS, "Fisher|%s|70425" % fisher, "|%s|70425" % ("0" * 27)])
+        two = SAMPLE + " and\n" + "FAL1-70001-Fisher-" + fisher
+        self.assertEqual(self.plans(two)[0], ["Gatherer's Path|%s|70425" % SAMPLE_RANKS, "Fisher|%s|70001" % fisher])
+
+    def test_a_code_from_another_build_reads_and_carries_its_build(self):
+        # the ranks of another build can't be checked against this one's perks
+        over = "9" * 27
+        self.assertEqual(self.plans("FAL1-70001-Old-" + over)[0], ["Old|" + over + "|70001"])
+        self.assertEqual(self.plans("FAL1-12345678-Old-" + SAMPLE_RANKS)[0], ["Old|%s|12345678" % SAMPLE_RANKS])
+
+    def test_a_rank_past_what_its_perk_takes_is_refused_for_the_build_the_addon_knows(self):
+        err = self.error("FAL1-70425-Over-" + "6" + "0" * 26)
+        self.assertEqual(err, "Plan 1 of that code has more ranks of Master Chef than the perk takes (5). Copy the whole code again.")
+        # Bartering (the third) takes 2; the most of every perk is fine
+        self.assertIn("Bartering", self.error("FAL1-70425-Over-00" + "3" + "0" * 24))
+        full = L.eval("function() local out = {} for i, p in ipairs(FA.Legacy.PERKS) do out[i] = string.format('%d', p.max) end return table.concat(out) end")()
+        self.assertEqual(self.plans("FAL1-70425-Full-" + full)[0], ["Full|%s|70425" % full])
+
+    def test_errors_say_why(self):
+        say = self.error
+        self.assertIn("Paste a Legacy plan code", say(""))
+        self.assertIn("Paste a Legacy plan code", say("  \n"))
+        self.assertIn("isn't a Legacy plan code", say("hello there"))
+        self.assertIn("isn't a Legacy plan code", say("https://foreverarmoury.app/legacy/" + SAMPLE_RANKS))
+        self.assertIn("isn't a Legacy plan code", say("FAT3-70170-warrior-Arms-0a-0"))
+        self.assertIn("isn't a Legacy plan code", say("FAL-Gatherer-" + SAMPLE_RANKS))
+        self.assertIn("isn't a Legacy plan code", say("FAL0-70425--" + SAMPLE_RANKS))
+        self.assertIn("newer version", say("FAL2-70425--" + SAMPLE_RANKS))
+        self.assertIn("newer version", say("FAL999-70425--" + SAMPLE_RANKS))
+        for bad in ["FAL1-", "FAL1-70425", "FAL1-Gatherer-" + SAMPLE_RANKS, "FAL1-x-Gatherer-" + SAMPLE_RANKS, "FAL1-123456789-A-" + SAMPLE_RANKS,
+                    "FAL1-70425-Gatherer", "FAL1-70425-" + SAMPLE_RANKS]:
+            self.assertRegex(say(bad), r"doesn't read.*cut off", bad)
+        whole = SAMPLE
+        self.assertRegex(say(whole[:-1]), r"Plan 1 .* doesn't read.*cut off")          # one rank short
+        self.assertRegex(say(whole[:-12]), r"Plan 1 .* doesn't read")                  # cut off in the ranks
+        self.assertRegex(say(whole[:whole.index("-", 6) + 4]), r"doesn't read")        # cut off in the name
+        self.assertRegex(say(whole + "0"), r"Plan 1 .* doesn't read")                  # one rank too many
+        self.assertRegex(say("FAL1-70425-Gatherer-" + SAMPLE_RANKS.upper().replace("0", "Z")), r"Plan 1 .* doesn't read")
+        self.assertRegex(say(whole + ".Fisher"), r"Plan 2 .* doesn't read")
+        self.assertRegex(say(whole + ".Fisher-" + SAMPLE_RANKS + "0"), r"Plan 2 .* doesn't read")
+        self.assertRegex(say(whole + "..Fisher-" + SAMPLE_RANKS), r"Plan 2 .* doesn't read")
+        for bad in ["Gath%2", "Ga%ZZth", "%FF%FE", "%C3"]:
+            self.assertRegex(say("FAL1-70425-" + bad + "-" + SAMPLE_RANKS), r"name of plan 1 .* cut off", bad)
+        # a good plan after a bad one in a paste doesn't hide it
+        self.assertRegex(say(whole[:-1] + " " + whole), r"Plan 1 .* doesn't read")
+
+    def test_find_says_whether_a_text_has_a_legacy_code(self):
+        find = L.eval("function(t) return FA.LegacyCode.Find(t) end")
+        self.assertTrue(find("see " + SAMPLE))
+        self.assertTrue(find("FAL9-"))
+        self.assertFalse(find("FAT3-70170-warrior-A-0a-0 FAG1-warrior-0"))
+        self.assertFalse(find(""))
+
+    def test_a_long_run_of_dots_reads_at_once(self):
+        timed = L.eval("function(t) local c = os.clock(); local p, e = FA.LegacyCode.Read(t); return p and #p, e, os.clock() - c end")
+        n, err, seconds = timed(SAMPLE + "." * 200000)
+        self.assertEqual(n, 1)
+        self.assertLess(seconds, 1)
+        n, err, seconds = timed("FAL1-" + ".-" * 100000 + "a")
+        self.assertIsNone(n)
+        self.assertLess(seconds, 1)
+
+    def test_names_encode_the_same_under_every_locale(self):
+        # %w follows the C locale: under a UTF-8 one it takes bytes above 127 for letters (as BuildCode's test says)
+        before = locale.setlocale(locale.LC_CTYPE)
+        tried = []
+        try:
+            for name in ["C", "en_US.UTF-8", "C.UTF-8", "de_DE.UTF-8", "fr_FR.UTF-8", "ja_JP.UTF-8"]:
+                try:
+                    locale.setlocale(locale.LC_CTYPE, name)
+                except locale.Error:
+                    continue
+                tried.append(name)
+                self.assertEqual(self.write("Ünï 名"), "FAL1-70425-%C3%9Cn%C3%AF%20%E5%90%8D-" + SAMPLE_RANKS, name)
+                self.assertEqual(self.plans(SAMPLE + "—and more")[0], ["Gatherer's Path|%s|70425" % SAMPLE_RANKS], name)
+        finally:
+            locale.setlocale(locale.LC_CTYPE, before)
+        self.assertIn("C", tried)
+
+
+class Legacy(unittest.TestCase):
+    """Legacy.lua: the account's plans, where it is on one, and Apply across the three Legacy trees' configs."""
+
+    def setUp(self):
+        L.run("RESET('traits'); LEGACY_ON = true")
+
+    def steps(self, byName, build=70425):
+        """The steps Progress lists for a plan, a line each: tree, perk and the rank it makes."""
+        return L.eval("""function(build)
+          local p, why = FA.Legacy.Progress({ name = 'P', ranks = LPLAN(%s), build = build })
+          if not p then return nil, why end
+          local out = {}
+          for i, s in ipairs(p.steps) do out[i] = s.tree.name:sub(1, 3) .. ' ' .. s.name .. ' ' .. s.rank end
+          return table.concat(out, '\\n'), p.over, #p.blocked
+        end""" % lua_table(byName))(build)
+
+    def apply(self, byName, build=70425):
+        return L.eval("function(build) return FA.ApplyLegacy({ name = 'P', id = 1, ranks = LPLAN(%s), build = build }) end" % lua_table(byName))(build)
+
+    def log(self):
+        return [v for _, v in sorted(L.eval("LOG").items())]
+
+    def account(self):
+        """The account's committed ranks by perk name, those above 0."""
+        return {k: v for k, v in L.eval("function() local out = {} for _, p in ipairs(FA.Legacy.PERKS) do if (LEG[p.node] or 0) > 0 then out[p.name] = LEG[p.node] end end return out end")().items()}
+
+    # ---- the perks
+    def test_the_table_is_of_the_sites_build_and_order(self):
+        self.assertEqual(L.eval("FA.Legacy.BUILD"), 70425)
+        self.assertEqual(L.eval("FA.Legacy.CLIENT"), "1.60.1.70425")
+        self.assertEqual(L.eval("#FA.Legacy.PERKS"), 27)
+        names = L.eval("function() local out = {} for i, p in ipairs(FA.Legacy.PERKS) do out[i] = p.name end return out end")()
+        at = lambda i: names[i]
+        # the sample plan's places, as the site's own test checks them in the data
+        self.assertEqual([at(1), at(2), at(11), at(12), at(20), at(24)], ["Master Chef", "Working Overtime", "Well Rested", "Talented", "Gourmand", "The Quick and the Dead"])
+        trees = L.eval("function() local out = {} for i, p in ipairs(FA.Legacy.PERKS) do out[i] = p.tree end return table.concat(out, ',') end")()
+        self.assertEqual(trees, ",".join(["1187"] * 9 + ["1188"] * 9 + ["1189"] * 9))
+        # nodes, max ranks and the locked ones (the game's "Unknown" perks)
+        node = lambda i: L.eval("FA.Legacy.PERKS[%d].node" % i)
+        self.assertEqual([node(1), node(2), node(12), node(19), node(27)], [110289, 110290, 110298, 110319, 110314])
+        self.assertEqual(L.eval("FA.Legacy.PERKS[12].node"), L.eval("FA.TALENTED_NODE"))   # the perk the addon reads for the first level
+        self.assertEqual(sum(L.eval("FA.Legacy.PERKS[%d].max" % i) for i in range(1, 28)), 5 + 5 + 2 + 1 + 5 + 3 + 1 + 1 + 2 + 2 + 5 + 5 + 1 + 1 + 5 + 3 + 1 + 2 + 5 + 3 + 2 + 1 + 1 + 2 + 1 + 5 + 5)
+        self.assertEqual([i for i in range(1, 28) if L.eval("FA.Legacy.PERKS[%d].locked" % i)], [7, 8, 13, 14, 22, 23])
+        # a perk's prerequisite is another perk of its tree
+        self.assertEqual(L.eval("FA.Legacy.PERKS[4].afterIndex"), 3)    # Dedicated Study after Bartering
+        self.assertEqual(L.eval("FA.Legacy.PERKS[12].afterIndex"), 11)  # Talented after Well Rested
+        self.assertIsNone(L.eval("FA.Legacy.PERKS[1].afterIndex"))
+
+    # ---- the plans kept for the account
+    def test_plans_are_kept_for_the_account_and_one_is_followed(self):
+        L.run("FA.Legacy.Add({ { name = 'A', ranks = LPLAN({ ['Working Overtime'] = 5 }), build = 70425 }, { name = 'B', ranks = LPLAN({}), build = 70001 } })")
+        self.assertEqual(L.eval("#FA.Legacy.Plans()"), 2)
+        self.assertEqual(L.eval("FA.Legacy.Plans()[1].id"), 1)
+        L.run("FA.Legacy.SetActive(2)")
+        self.assertEqual(L.eval("FA.Legacy.Active().name"), "B")
+        # pasting a plan again as the site has it now updates its build and keeps its id, and the follow
+        L.run("FA.Legacy.Add({ { name = 'B', ranks = LPLAN({}), build = 70425 } })")
+        self.assertEqual((L.eval("#FA.Legacy.Plans()"), L.eval("FA.Legacy.Active().build"), L.eval("FA.Legacy.Active().id")), (2, 70425, 2))
+        # the same ranks under another name is another plan
+        L.run("FA.Legacy.Add({ { name = 'C', ranks = LPLAN({}), build = 70425 } })")
+        self.assertEqual(L.eval("#FA.Legacy.Plans()"), 3)
+        self.assertTrue(L.eval("FA.Legacy.Forget(2)"))
+        self.assertIsNone(L.eval("FA.Legacy.Active()"))
+        self.assertFalse(L.eval("FA.Legacy.Forget(99)"))
+        self.assertEqual(L.eval("FA.Legacy.Plans()[2].name"), "C")
+
+    def test_plans_are_account_wide_not_a_classes(self):
+        L.run("FA.Legacy.Add({ { name = 'A', ranks = LPLAN({}), build = 70425 } }); FA.class = 'mage'")
+        self.assertEqual(L.eval("#FA.Legacy.Plans()"), 1)
+        L.run("FA.class = 'warrior'")
+
+    def test_saved_plans_that_are_damaged_are_dropped_or_repaired_at_load(self):
+        ranks = SAMPLE_RANKS
+        L.run("""FA.db.legacy = {
+          'junk', { name = 'Short', ranks = '0101', build = 70425 }, { name = 'Caps', ranks = '%s', build = 70425 },
+          { name = 5, ranks = '%s', build = 'x', id = 4 }, { name = 'Dup', ranks = '%s', build = 70001, id = 4 }, { name = 'Fine', ranks = '%s', build = 70425, id = 9 } }
+          FA.db.legacyFollow = 9; FA.db.nextId = 2""" % ("A" * 27, ranks, ranks, ranks))
+        dropped, repaired = L.eval("function() return FA.Legacy.Repair() end")()
+        self.assertEqual((dropped, repaired), (3, 2))
+        names = [(p.name, p.build) for p in L.eval("FA.db.legacy").values()]
+        self.assertEqual(names, [("", 0), ("Dup", 70001), ("Fine", 70425)])
+        ids = [p.id for p in L.eval("FA.db.legacy").values()]
+        self.assertEqual(len(set(ids)), 3)
+        self.assertGreater(L.eval("FA.db.nextId"), max(ids))
+        self.assertEqual(L.eval("FA.db.legacyFollow"), 9)
+        L.run("FA.db.legacyFollow = 777; FA.Legacy.Repair()")
+        self.assertIsNone(L.eval("FA.db.legacyFollow"))
+        # at load, FA.Init says so
+        L.run("PRINTED = ''; ForeverArmouryDB = { legacy = { 'junk', { name = 'A', ranks = '%s', build = 70425 } } }; FA.Init()" % ranks)
+        self.assertIn("Your saved Legacy plans were damaged: dropped 1 saved Legacy plan it couldn't read, and repaired 1 saved Legacy plan with a missing name, build or id.", L.eval("PRINTED"))
+        L.run("ForeverArmouryDB = { legacy = 5 }; FA.Init()")
+        self.assertEqual(L.eval("#FA.db.legacy"), 0)
+
+    def test_export_gives_a_code_a_build(self):
+        self.assertIsNone(L.eval("FA.Legacy.Export()"))
+        L.run("""FA.Legacy.Add({ { name = "Gatherer's Path", ranks = '%s', build = 70425 }, { name = 'Old', ranks = LPLAN({}), build = 70001 },
+          { name = 'Second', ranks = LPLAN({ Gourmand = 1 }), build = 70425 } })""" % SAMPLE_RANKS)
+        lines = L.eval("FA.Legacy.Export()").split("\n")
+        self.assertEqual(lines, [SAMPLE + ".Second-" + "0" * 19 + "1" + "0" * 7, "FAL1-70001-Old-" + "0" * 27])
+        # and it reads back as the plans that were kept
+        got = L.eval("function(t) local plans = FA.LegacyCode.Read(t); return #plans end")("\n".join(lines))
+        self.assertEqual(got, 3)
+
+    # ---- where the account is on a plan
+    def test_a_plan_from_nothing_lists_every_rank_in_an_order_the_game_takes(self):
+        L.run("LEGACY_ON = true")
+        steps, over, blocked = self.steps(GATHERER)
+        self.assertEqual(steps.split("\n"),
+                         ["Pro Working Overtime 1", "Pro Working Overtime 2", "Pro Working Overtime 3", "Pro Working Overtime 4", "Pro Working Overtime 5", "Pro Master Chef 1",   # Master Chef wants 5 points on the tree first
+                          "Adv Well Rested 1", "Adv Well Rested 2", "Adv Well Rested 3", "Adv Well Rested 4", "Adv Well Rested 5", "Adv Talented 1",                            # and Talented a full Well Rested
+                          "Res Gourmand 1", "Res Gourmand 2", "Res Gourmand 3", "Res The Quick and the Dead 1"])
+        self.assertEqual((over, blocked), (0, 0))
+        p = L.eval("""function() local p = FA.Legacy.Progress({ ranks = LPLAN({ ['Master Chef'] = 1, ['Working Overtime'] = 5 }), build = 70425 })
+          return p.wanted, p.had, p.spent, p.perks[1].want, p.perks[2].want, p.perks[2].have end""")()
+        self.assertEqual(p, (6, 0, 0, 1, 5, 0))
+
+    def test_a_perk_waits_for_its_points_and_rows_come_in_order(self):
+        # Bartering (row 2) wants 5 points on the tree first, which Working Overtime gives; Bountiful Harvest (row 3) wants none
+        steps, _, blocked = self.steps({"Working Overtime": 5, "Bountiful Harvest": 2, "Bartering": 2})
+        self.assertEqual(steps.split("\n"), ["Pro Working Overtime %d" % n for n in range(1, 6)] + ["Pro Bartering 1", "Pro Bartering 2", "Pro Bountiful Harvest 1", "Pro Bountiful Harvest 2"])
+        self.assertEqual(blocked, 0)
+        # Dedicated Study wants a full Bartering and 10 points on the tree
+        # Dedicated Study (row 2) wants a full Bartering and 10 points on the tree's other perks: it comes the moment they are
+        # there, ahead of the rest of Bountiful Harvest (row 3), which has been taking the points meanwhile
+        steps, _, blocked = self.steps({"Working Overtime": 5, "Bountiful Harvest": 5, "Bartering": 2, "Dedicated Study": 1})
+        lines = steps.split("\n")
+        self.assertEqual(lines[lines.index("Pro Bountiful Harvest 3") + 1:], ["Pro Dedicated Study 1", "Pro Bountiful Harvest 4", "Pro Bountiful Harvest 5"])
+        self.assertEqual(blocked, 0)
+
+    def test_a_part_done_plan_lists_what_is_left(self):
+        L.run("LSET({ ['Working Overtime'] = 5, ['Well Rested'] = 2 })")
+        steps, over, blocked = self.steps(GATHERER)
+        lines = steps.split("\n")
+        self.assertEqual(lines[0], "Pro Master Chef 1")
+        self.assertEqual(lines[1:4], ["Adv Well Rested 3", "Adv Well Rested 4", "Adv Well Rested 5"])
+        self.assertEqual(len(lines), 16 - 7)
+        # more than the plan has: counted, never taken back
+        L.run("LSET({ ['Reinforce'] = 3, ['Field Guide'] = 1 })")
+        steps, over, blocked = self.steps(GATHERER)
+        self.assertEqual(over, 4)
+        self.assertEqual(len(steps.split("\n")), 9)
+        # a plan that is done has no steps
+        L.run("LSET({ ['Master Chef'] = 1, ['Well Rested'] = 5, ['Talented'] = 1, ['Gourmand'] = 3, ['The Quick and the Dead'] = 1 })")
+        self.assertEqual(self.steps(GATHERER)[0], "")
+
+    def test_a_plan_that_cant_be_bought_as_it_stands_says_so(self):
+        # Master Chef wants 5 points on the tree first, which the plan doesn't give; Talented wants a full Well Rested
+        blocked = L.eval("""function() local p = FA.Legacy.Progress({ ranks = LPLAN({ ['Master Chef'] = 1, ['Talented'] = 1, ['Well Rested'] = 2 }), build = 70425 })
+          local out = {} for i, b in ipairs(p.blocked) do out[i] = FA.Legacy.PERKS[b.perk].name .. ': ' .. b.why end
+          return table.concat(out, '|'), #p.steps end""")()
+        self.assertEqual(blocked, ("Master Chef: the plan has too few points in Professions before it|Talented: the plan doesn't fill Well Rested first", 2))
+        # a perk the game doesn't sell yet (one of the Unknown ones)
+        ranks = "0" * 6 + "1" + "0" * 20
+        blocked = L.eval("function(r) local p = FA.Legacy.Progress({ ranks = r, build = 70425 }); return FA.Legacy.PERKS[p.blocked[1].perk].node, p.blocked[1].why, #p.steps end")(ranks)
+        self.assertEqual(blocked, (113508, "the game doesn't sell it yet", 0))
+
+    def test_a_plan_from_another_build_is_shown_and_never_followed(self):
+        steps, why = self.steps(GATHERER, 70001)
+        self.assertIsNone(steps)
+        self.assertIn("client build 70001", why)
+        self.assertIn("70425", why)
+        _, why = self.steps(GATHERER, 0)
+        self.assertIn("client build unknown", why)
+        self.assertTrue(L.eval("FA.Legacy.Differs({ build = 70001 })"))
+        self.assertFalse(L.eval("FA.Legacy.Differs({ build = 70425 })"))
+        ok, said = self.apply(GATHERER, 70001)
+        self.assertFalse(ok)
+        self.assertIn("70001", said)
+        self.assertEqual(self.log(), [])
+
+    def test_the_game_hasnt_given_the_trees_yet(self):
+        L.run("LEGACY_ON = false")
+        steps, why = self.steps(GATHERER)
+        self.assertIsNone(steps)
+        self.assertIn("hasn't given the Legacy trees yet", why)
+        L.run("LEGACY_ON = true; local f = C_Traits.GetNodeInfo; C_Traits.GetNodeInfo = function(c, n) if n == 110298 then return nil end return f(c, n) end; SAVED = f")
+        steps, why = self.steps(GATHERER)
+        L.run("C_Traits.GetNodeInfo = SAVED")
+        self.assertIsNone(steps)
+        self.assertIn("doesn't know the Legacy perk Talented (node 110298)", why)
+
+    # ---- the points
+    def test_the_points_and_the_cap_come_from_the_games_currency(self):
+        self.assertEqual(L.eval("function() return FA.Legacy.Points() end")(), (16, 16))
+        L.run("LPOINTS, LCAP = 7, 20")
+        self.assertEqual(L.eval("function() local a, c = FA.Legacy.Points(); return a .. '/' .. c end")(), "7/20")
+        L.run("LPOINTS = nil")   # the game says nothing
+        self.assertEqual(L.eval("function() local a, c = FA.Legacy.Points(); return a == nil and c == nil end")(), True)
+        L.run("LEGACY_ON = false")
+        self.assertEqual(L.eval("function() local a, c = FA.Legacy.Points(); return a == nil and c == nil end")(), True)
+
+    def plan_size(self, byName=GATHERER):
+        return L.eval("function() local list, p, held = FA.Legacy.Plan({ ranks = LPLAN(%s), build = 70425 }); return list and #list, list and held, (not list) and p or nil end" % lua_table(byName))()
+
+    def test_the_points_available_stop_the_list(self):
+        self.assertEqual(self.plan_size(), (16, 0, None))
+        L.run("LPOINTS = 4")
+        self.assertEqual(self.plan_size(), (4, 12, None))
+        L.run("LPOINTS = 0")
+        self.assertEqual(self.plan_size(), (None, None, "You have no Legacy points to spend."))
+        # the game saying nothing: the cap alone limits it, and the game turns down what it won't sell
+        L.run("LPOINTS = nil")
+        self.assertEqual(self.plan_size(), (16, 0, None))
+
+    def test_the_cap_stops_the_list(self):
+        L.run("LSET({ ['Bountiful Harvest'] = 5, ['Thrill of Adventure'] = 5, ['Reinforce'] = 5 }); LPOINTS = 16")   # 15 spent elsewhere
+        self.assertEqual(self.plan_size(), (1, 15, None))
+        L.run("LSET({ ['Diplomat'] = 1 })")
+        self.assertEqual(self.plan_size(), (None, None, "You have spent the seasonal cap of 16 Legacy points."))
+        # the cap is the game's when it says one
+        L.run("LCAP = 18")
+        self.assertEqual(self.plan_size()[0:2], (2, 14))
+        L.run("LCAP = nil")   # not told: the table's 16
+        self.assertEqual(self.plan_size(), (None, None, "You have spent the seasonal cap of 16 Legacy points."))
+
+    def test_nothing_to_buy_says_why(self):
+        L.run("LSET({ ['Master Chef'] = 1, ['Working Overtime'] = 5, ['Well Rested'] = 5, ['Talented'] = 1, ['Gourmand'] = 3, ['The Quick and the Dead'] = 1 })")
+        self.assertEqual(self.plan_size(), (None, None, "Every rank of this plan is bought."))
+        got = self.plan_size({"Master Chef": 1})[2]
+        self.assertEqual(got, "Every rank of this plan is bought.")   # Master Chef is had; the rest is empty
+        L.run("LEG = {}")
+        self.assertIn("Master Chef, the plan has too few points", self.plan_size({"Master Chef": 1})[2])
+
+    # ---- Apply
+    def test_apply_buys_a_plan_from_nothing_tree_by_tree(self):
+        ok, said = self.apply(GATHERER)
+        self.assertTrue(ok)
+        self.assertEqual(said, "Working Overtime x5, Master Chef, Well Rested x5, Talented, Gourmand x3, The Quick and the Dead")
+        log = self.log()
+        self.assertEqual(log, ["buy Working Overtime"] * 5 + ["buy Master Chef", "commit 1187"] + ["buy Well Rested"] * 5 + ["buy Talented", "commit 1188"] +
+                         ["buy Gourmand"] * 3 + ["buy The Quick and the Dead", "commit 1189"])
+        self.assertEqual(self.account(), GATHERER)
+        self.assertEqual(L.eval("LAVAILABLE()"), 0)
+        # the plan is done: nothing more to buy
+        self.assertEqual(self.apply(GATHERER), (False, "Every rank of this plan is bought."))
+
+    def test_apply_buys_what_a_part_done_plan_still_needs(self):
+        L.run("LSET({ ['Working Overtime'] = 5, ['Well Rested'] = 2 }); LPOINTS = 9")
+        ok, said = self.apply(GATHERER)
+        self.assertTrue(ok)
+        self.assertEqual(said, "Master Chef, Well Rested x3, Talented, Gourmand x3, The Quick and the Dead")
+        self.assertEqual(self.account(), GATHERER)
+
+    def test_apply_stops_at_the_points_available_and_the_cap(self):
+        L.run("LPOINTS = 7")
+        ok, said = self.apply(GATHERER)
+        self.assertTrue(ok)
+        self.assertEqual(said, "Working Overtime x5, Master Chef, Well Rested")   # the first seven, in order
+        self.assertEqual(self.account(), {"Working Overtime": 5, "Master Chef": 1, "Well Rested": 1})
+        self.assertEqual(L.eval("LAVAILABLE()"), 0)
+        # under the cap: 12 spent elsewhere, 4 left of it, and 9 points to spend
+        L.run("LEG = {}; LOG = {}; LSET({ ['Diplomat'] = 5, ['Thrill of Adventure'] = 5, ['Reinforce'] = 2 }); LPOINTS = 9")
+        ok, said = self.apply(GATHERER)
+        self.assertTrue(ok)
+        self.assertEqual(said, "Working Overtime x4")
+        self.assertEqual(self.account()["Working Overtime"], 4)
+        self.assertEqual(self.log(), ["buy Working Overtime"] * 4 + ["commit 1187"])   # no tree past the first was touched
+
+    def test_a_refused_purchase_rolls_back_that_tree_only(self):
+        L.run("LREFUSE = 110298")   # the game turns down Talented
+        ok, said = self.apply(GATHERER)
+        self.assertFalse(ok)
+        self.assertIn("The game wouldn't take Talented rank 1 (Adventure). Nothing was bought in Adventure.", said)
+        self.assertIn("Bought: Working Overtime x5, Master Chef, Gourmand x3, The Quick and the Dead.", said)
+        self.assertEqual(self.account(), {"Working Overtime": 5, "Master Chef": 1, "Gourmand": 3, "The Quick and the Dead": 1})
+        log = self.log()
+        self.assertEqual(log[log.index("refused Talented") + 1], "rollback 1188")
+        self.assertNotIn("commit 1188", log)
+        self.assertIn("commit 1187", log)
+        self.assertIn("commit 1189", log)
+        self.assertIsNone(L.eval("LSTAGED[202]"))
+        # a rank counted in the message: the second of a perk with more than one
+        L.run("LEG = {}; LOG = {}; LPOINTS = 16; LREFUSE = 110301")   # Well Rested
+        ok, said = self.apply(GATHERER)
+        self.assertIn("The game wouldn't take Well Rested rank 1 (Adventure)", said)
+
+    def test_a_commit_the_game_turns_down_is_rolled_back(self):
+        L.run("LFAIL_COMMIT = true")   # every tree's
+        ok, said = self.apply(GATHERER)
+        self.assertFalse(ok)
+        self.assertEqual(said.count("Nothing was bought in"), 3)
+        self.assertIn("The game wouldn't apply the Professions perks. Nothing was bought in Professions.", said)
+        self.assertEqual(self.account(), {})
+        self.assertEqual([x for x in self.log() if x.startswith("rollback")], ["rollback 1187", "rollback 1188", "rollback 1189"])
+        self.assertEqual(L.eval("next(LSTAGED)"), None)
+        # one tree's alone
+        L.run("LOG = {}; LFAIL_COMMIT = 202")
+        ok, said = self.apply(GATHERER)
+        self.assertFalse(ok)
+        self.assertIn("Adventure perks", said)
+        self.assertNotIn("Professions perks", said)
+        self.assertEqual(self.account(), {"Working Overtime": 5, "Master Chef": 1, "Gourmand": 3, "The Quick and the Dead": 1})
+        self.assertIn("Bought: Working Overtime x5, Master Chef, Gourmand x3, The Quick and the Dead.", said)
+
+    def test_a_commit_the_game_fails_after_it_started_is_rolled_back_by_the_event(self):
+        L.run("LFAIL_COMMIT = 'late'")   # the cast starts; nothing is applied
+        ok, said = self.apply({"Working Overtime": 2})
+        self.assertTrue(ok)   # started
+        self.assertEqual(L.eval("LSTAGED[201][110290]"), 2)
+        L.run("PRINTED = ''; EVENT('CONFIG_COMMIT_FAILED', 201); FLUSH()")
+        self.assertIsNone(L.eval("LSTAGED[201]"))
+        self.assertEqual(self.log()[-1], "rollback 1187")
+        self.assertIn("The game didn't apply the Legacy perks, so they were rolled back. Nothing was bought.", L.eval("PRINTED"))
+        # an event for a config the addon didn't commit, or after the game said yes, is the game's
+        L.run("PRINTED = ''; LOG = {}; EVENT('CONFIG_COMMIT_FAILED', 201); EVENT('CONFIG_COMMIT_FAILED', 202); EVENT('CONFIG_COMMIT_FAILED')")
+        self.assertEqual(self.log(), [])
+        self.assertNotIn("Legacy perks", L.eval("PRINTED"))
+        L.run("LFAIL_COMMIT = false; LOG = {}")
+        ok, said = self.apply({"Working Overtime": 2})
+        L.run("EVENT('TRAIT_CONFIG_UPDATED', 201); PRINTED = ''; EVENT('CONFIG_COMMIT_FAILED', 201)")
+        self.assertEqual([x for x in self.log() if x.startswith("rollback")], [])
+        self.assertNotIn("Legacy perks", L.eval("PRINTED"))
+        # no config in the event: the commit in flight is the one
+        L.run("LFAIL_COMMIT = 'late'; LOG = {}")
+        self.apply({"Well Rested": 1})
+        L.run("PRINTED = ''; EVENT('CONFIG_COMMIT_FAILED')")
+        self.assertEqual(self.log()[-1], "rollback 1188")
+        self.assertIn("The game didn't apply the Legacy perks", L.eval("PRINTED"))
+
+    def test_a_commit_the_game_fails_inside_the_call_is_said_by_apply(self):
+        L.run("LFAIL_COMMIT = 'now'; PRINTED = ''")
+        ok, said = self.apply({"Working Overtime": 2})
+        self.assertFalse(ok)
+        self.assertIn("The game wouldn't apply the Professions perks. Nothing was bought in Professions.", said)
+        self.assertEqual(self.log()[-1], "rollback 1187")
+        self.assertNotIn("Legacy perks, so they were rolled back", L.eval("PRINTED"))   # apply says it, the event doesn't say it twice
+        self.assertIsNone(L.eval("LSTAGED[201]"))
+
+    def test_apply_refuses_in_combat(self):
+        L.run("COMBAT = true")
+        ok, said = self.apply(GATHERER)
+        self.assertEqual((ok, said), (False, "You can't change Legacy perks in combat."))
+        self.assertEqual(self.log(), [])
+
+    def test_apply_leaves_the_legacy_windows_own_staged_changes_alone(self):
+        L.run("LSTAGED[202] = { [110301] = 1 }")   # a rank bought in the window and not applied
+        ok, said = self.apply(GATHERER)
+        self.assertEqual((ok, said), (False, "The Legacy window has changes waiting. Apply or undo them there first."))
+        self.assertEqual(self.log(), [])
+        self.assertEqual(L.eval("LSTAGED[202][110301]"), 1)   # and not rolled back
+
+    def test_apply_with_no_plan_to_buy_buys_nothing(self):
+        ok, said = self.apply({})
+        self.assertEqual((ok, said), (False, "Every rank of this plan is bought."))
+        self.assertEqual(self.log(), [])
+
+    def test_a_missing_trait_function_is_said_not_an_error(self):
+        L.run("SAVED = C_Traits.ConfigHasStagedChanges; C_Traits.ConfigHasStagedChanges = nil")
+        self.assertFalse(L.eval("FA.Legacy.HasStaged()"))   # nothing to ask: the game's own refusals roll back
+        L.run("C_Traits.ConfigHasStagedChanges = SAVED")
 
 
 class UI(unittest.TestCase):
@@ -1434,15 +2043,15 @@ class UI(unittest.TestCase):
     def setUpClass(cls):
         L.run("RESET('traits')")
         L.run(UI_STUB)
-        for name in ("TalentUI.lua", "GearUI.lua"):
+        for name in ("TalentUI.lua", "GearUI.lua", "LegacyUI.lua"):
             L.run("""
               local f = assert(io.open(ROOT .. '/%s', 'rb')); local src = f:read('*a'); f:close()
               assert((loadstring or load)(src, '@%s'))('ForeverArmoury', FA)
             """ % (name, name))
-        L.run("FA.HookTalentFrame(); FA.HookCharacterFrame(); FA.SetupOptions()")
+        L.run("FA.HookTalentFrame(); FA.HookCharacterFrame(); FA.HookLegacyFrame(); FA.SetupOptions()")
 
     def setUp(self):
-        L.run("RESET('traits'); POPUPS = {}; LIT = nil; FA.Refresh()")   # the refresh puts out what a test left lit
+        L.run("RESET('traits'); POPUPS = {}; LIT = nil; LSHOWN_TREE = 1187; LegacySystemFrame:Show(); FA.Refresh(); FA.RefreshLegacy()")   # the refresh puts out what a test left lit
 
     def panel(self, key):
         return L.eval("function(k) local p = ForeverArmouryTalentPanel; if k == 'status' then return p.status.text end "
@@ -1965,6 +2574,267 @@ class UI(unittest.TestCase):
         self.assertFalse(L.eval("ForeverArmouryGearPanel.shown"))
         L.run("CharacterFrame.IsShown = nil; FA.RefreshGear()")
         self.assertTrue(L.eval("ForeverArmouryGearPanel.shown"))
+
+    # ---- the Legacy panel
+    def legacy(self):
+        """What the Legacy panel says: shown, status, Apply's text, whether it's enabled and its tooltip, the plan rows and the perk rows."""
+        return L.eval("""function()
+          local p = ForeverArmouryLegacyPanel
+          local plans, perks = {}, {}
+          for i, r in ipairs(p.rows) do if r.shown then plans[#plans + 1] = (r.mark.shown and '> ' or '  ') .. r.text.text end end
+          for i, r in ipairs(p.perks) do if r.shown then perks[#perks + 1] = r.name.text .. ' ' .. (r.ranks.text or '') end end
+          return p.shown, p.status.text, p.apply.text, p.apply.enabled, p.apply.why, table.concat(plans, '\\n'), table.concat(perks, '\\n')
+        end""")()
+
+    def lit(self):
+        """The perks whose button has our glow showing, by name."""
+        return sorted(L.eval("""function()
+          local out = {}
+          for _, p in ipairs(FA.Legacy.PERKS) do
+            local b = LBUTTONS[p.node]
+            if b then for _, c in ipairs(b.children) do if c.shown then out[#out + 1] = p.name end end end
+          end
+          return out
+        end""")().values())
+
+    def test_legacy_panel_without_plans(self):
+        shown, status, apply, enabled, why, plans, perks = self.legacy()
+        self.assertTrue(shown)
+        self.assertIn("Pick a plan to follow.", status)
+        self.assertIn("Legacy points: not told by the game, cap 16.", status)   # the trees are not there (no configs)
+        self.assertEqual((apply, enabled, why, plans, perks), ("Apply", False, "Pick a plan to follow first.", "", ""))
+        self.assertEqual(L.eval("ForeverArmouryLegacyPanel.plansHeader.text"), "Plans (0)")
+        # it sits beside the Legacy window
+        self.assertTrue(L.eval("ForeverArmouryLegacyPanel.points[1][2] == LegacySystemFrame"))
+        self.assertEqual(L.eval("ForeverArmouryLegacyPanel.points[1][3]"), "TOPRIGHT")
+
+    def test_import_follow_light_and_apply_a_legacy_plan(self):
+        L.run("LEGACY_ON = true")
+        ok, said = L.eval("function(t) return FA.ImportText(t) end")(SAMPLE)
+        self.assertTrue(ok)
+        self.assertEqual(said, "1 Legacy plan imported for the account. Following Gatherer's Path.")
+        shown, status, apply, enabled, why, plans, perks = self.legacy()
+        self.assertEqual(plans, "> Gatherer's Path")
+        self.assertIn("Following |cffffd100Gatherer's Path|r.", status)
+        self.assertIn("Legacy points: 16 available, 0 of 16 spent.", status)
+        self.assertIn("Next: |cffffd100Working Overtime|r 1/5 (Professions).", status)
+        self.assertEqual((apply, enabled), ("Apply 16 ranks", True))
+        self.assertEqual(why, "Working Overtime x5, Master Chef, Well Rested x5, Talented, Gourmand x3, The Quick and the Dead")
+        # the perks the plan wants, in the trees' order; the next of the tree is gold, and the rest white
+        self.assertEqual(perks.split("\n"), [
+            "|cffffffffMaster Chef|r |cffffffff0/1|r", "|cffffd100Working Overtime|r |cffffd1000/5|r", "|cffffffffWell Rested|r |cffffffff0/5|r",
+            "|cffffffffTalented|r |cffffffff0/1|r", "|cffffffffGourmand|r |cffffffff0/3|r", "|cffffffffThe Quick and the Dead|r |cffffffff0/1|r"])
+        # the tree shown is Professions: its next perk is lit, the other trees' have no button
+        self.assertEqual(self.lit(), ["Working Overtime"])
+        L.run("LSHOWN_TREE = 1188; FA.RefreshLegacy()")
+        self.assertEqual(self.lit(), ["Well Rested"])
+        L.run("LSHOWN_TREE = 1189; FA.RefreshLegacy()")
+        self.assertEqual(self.lit(), ["Gourmand"])
+        # Apply: one confirm naming the perks, then the buying
+        L.run("FA.AskApplyLegacy()")
+        popup = L.eval("POPUPS[1]")
+        self.assertEqual(popup.which, "FOREVERARMOURY_LEGACY_APPLY")
+        self.assertEqual(popup.text, "Buy 16 Legacy ranks as Gatherer's Path says?\n\nWorking Overtime x5, Master Chef, Well Rested x5, Talented, Gourmand x3, The Quick and the Dead")
+        self.assertEqual(L.eval("#LOG"), 0)   # nothing is bought before the confirm
+        L.run("StaticPopupDialogs.FOREVERARMOURY_LEGACY_APPLY.OnAccept(nil, POPUPS[1].data)")
+        self.assertIn("Bought as Gatherer's Path says: Working Overtime x5", L.eval("PRINTED"))
+        self.assertEqual(L.eval("LEG[110290]"), 5)
+        shown, status, apply, enabled, why, plans, perks = self.legacy()
+        self.assertIn("Every rank of this plan is bought.", status)
+        self.assertIn("Legacy points: 0 available, 16 of 16 spent.", status)
+        self.assertEqual((apply, enabled, why), ("Apply", False, "Every rank of this plan is bought."))
+        self.assertTrue(all("|cff40ff40" in line for line in perks.split("\n")))
+        self.assertEqual(self.lit(), [])
+
+    def test_the_apply_button_follows_the_points_the_window_and_combat(self):
+        L.run("LEGACY_ON = true; FA.ImportText('%s'); LPOINTS = 4; FA.RefreshLegacy()" % SAMPLE)
+        text, enabled, why = self.legacy()[2:5]
+        self.assertEqual((text, enabled), ("Apply 4 ranks", True))
+        self.assertEqual(why, "Working Overtime x4\n12 more when you have the points.")
+        L.run("LPOINTS = 0; FA.RefreshLegacy()")
+        self.assertEqual(self.legacy()[2:5], ("Apply", False, "You have no Legacy points to spend."))
+        L.run("LPOINTS = 16; COMBAT = true; EVENT('PLAYER_REGEN_DISABLED'); FLUSH()")
+        self.assertEqual(self.legacy()[2:5], ("Apply", False, "You can't change Legacy perks in combat."))
+        self.assertIn("Next: |cffffd100Working Overtime|r", self.legacy()[1])   # the rest of the panel is as it was
+        L.run("COMBAT = false; EVENT('PLAYER_REGEN_ENABLED'); FLUSH(); LSTAGED[202] = { [110301] = 1 }; FA.RefreshLegacy()")
+        self.assertEqual(self.legacy()[2:5], ("Apply", False, "The Legacy window has changes waiting. Apply or undo them there first."))
+        L.run("LSTAGED = {}; EVENT('TRAIT_NODE_CHANGED'); FLUSH()")
+        self.assertEqual(self.legacy()[2:4], ("Apply 16 ranks", True))
+        # pressing Apply with nothing to buy says why in chat and opens no confirm
+        L.run("LPOINTS = 0; POPUPS = {}; PRINTED = ''; FA.AskApplyLegacy()")
+        self.assertEqual(L.eval("#POPUPS"), 0)
+        self.assertIn("You have no Legacy points to spend.", L.eval("PRINTED"))
+
+    def test_a_refused_buy_is_said_in_chat_and_the_panel_follows(self):
+        L.run("LEGACY_ON = true; LREFUSE = 110298; FA.ImportText('%s'); FA.AskApplyLegacy()" % SAMPLE)
+        L.run("StaticPopupDialogs.FOREVERARMOURY_LEGACY_APPLY.OnAccept(nil, POPUPS[1].data)")
+        printed = L.eval("PRINTED")
+        self.assertIn("The game wouldn't take Talented rank 1 (Adventure). Nothing was bought in Adventure.", printed)
+        self.assertIn("Bought: Working Overtime x5, Master Chef, Gourmand x3, The Quick and the Dead.", printed)
+        self.assertIn("Next: |cffffd100Well Rested|r 1/5 (Adventure).", self.legacy()[1])
+
+    def test_a_plan_from_another_build_is_shown_and_never_bought(self):
+        L.run("LEGACY_ON = true")
+        ok, said = L.eval("function(t) return FA.ImportText(t) end")("FAL1-70001-Old-" + SAMPLE_RANKS)
+        self.assertTrue(ok)
+        self.assertIn("1 Legacy plan imported for the account. 1 is from another client build than the addon's Legacy perks (70425), so it is shown and never bought. Following Old.", said)
+        shown, status, apply, enabled, why, plans, perks = self.legacy()
+        self.assertEqual(plans, "> |cffff6060! |rOld")
+        self.assertIn("client build 70001", status)
+        self.assertEqual((apply, enabled), ("Apply", False))
+        self.assertIn("client build 70001", why)
+        # its perks show with the ranks wanted and no ranks had
+        self.assertEqual(perks.split("\n")[0], "|cff909090Master Chef|r |cff9090901|r")
+        self.assertEqual(self.lit(), [])
+        L.run("POPUPS = {}; FA.AskApplyLegacy()")
+        self.assertEqual(L.eval("#POPUPS"), 0)
+
+    def test_the_plan_list_follows_forgets_and_scrolls(self):
+        codes = " ".join("FAL1-70425-P%d-%s" % (n, "0" * 26 + str(n % 6)) for n in range(1, 9))
+        L.run("FA.ImportText('%s')" % codes)
+        self.assertEqual(L.eval("#FA.Legacy.Plans()"), 8)
+        self.assertIsNone(L.eval("FA.Legacy.Active()"))   # eight at once: none is followed for the account
+        plans = self.legacy()[5].split("\n")
+        self.assertEqual(plans, ["  P1", "  P2", "  P3", "  P4", "  P5"])
+        self.assertEqual(L.eval("ForeverArmouryLegacyPanel.more.text"), "1-5 of 8")
+        self.assertEqual((L.eval("ForeverArmouryLegacyPanel.up.enabled"), L.eval("ForeverArmouryLegacyPanel.down.enabled")), (False, True))
+        L.run("local r = ForeverArmouryLegacyPanel.rows[2]; r.scripts.OnClick(r)")
+        self.assertEqual(L.eval("FA.Legacy.Active().name"), "P2")
+        self.assertEqual(self.legacy()[5].split("\n")[1], "> P2")
+        L.run("local r = ForeverArmouryLegacyPanel.rows[2]; r.scripts.OnClick(r)")   # a second press stops following it
+        self.assertIsNone(L.eval("FA.Legacy.Active()"))
+        L.run("local b = ForeverArmouryLegacyPanel.down; b.scripts.OnClick(b)")
+        self.assertEqual(self.legacy()[5].split("\n"), ["  P4", "  P5", "  P6", "  P7", "  P8"])   # the page, 4 on; it stops at the end
+        self.assertEqual(L.eval("ForeverArmouryLegacyPanel.more.text"), "4-8 of 8")
+        L.run("local p = ForeverArmouryLegacyPanel; p.scripts.OnMouseWheel(p, 1)")
+        self.assertEqual(self.legacy()[5].split("\n")[0], "  P3")
+        # forgetting asks, and a colour escape in a name is drawn as typed
+        L.run("FA.ImportText('FAL1-70425-A%7CcffFF0000Red%7Cr-" + SAMPLE_RANKS + "')")
+        self.assertEqual(L.eval("FA.Legacy.Plans()[9].name"), "A|cffFF0000Red|r")
+        L.run("FA.ScrollLegacy(100)")
+        self.assertEqual(self.legacy()[5].split("\n")[-1], "  A||cffFF0000Red||r")
+        L.run("local r = ForeverArmouryLegacyPanel.rows[5]; r.forget.scripts.OnClick({ GetParent = function() return r end })")
+        self.assertEqual(L.eval("POPUPS[1].which"), "FOREVERARMOURY_FORGET_LEGACY")
+        self.assertEqual(L.eval("POPUPS[1].text"), "A||cffFF0000Red||r")
+        L.run("StaticPopupDialogs.FOREVERARMOURY_FORGET_LEGACY.OnAccept(nil, POPUPS[1].data)")
+        self.assertEqual(L.eval("#FA.Legacy.Plans()"), 8)
+
+    def test_a_perk_the_plan_cant_buy_is_red(self):
+        L.run("LEGACY_ON = true; FA.ImportText('FAL1-70425-Odd-" + "1" + "0" * 26 + "')")
+        shown, status, *_ = self.legacy()
+        self.assertIn("Master Chef can't be bought: the plan has too few points in Professions before it.", status)
+        self.assertEqual(self.legacy()[2:4], ("Apply", False))
+        self.assertIn("|cffff6060Master Chef|r", self.legacy()[6])
+
+    def test_ranks_the_account_has_beyond_the_plan_are_said(self):
+        L.run("LEGACY_ON = true; LSET({ ['Reinforce'] = 3 }); FA.ImportText('%s')" % SAMPLE)
+        self.assertIn("3 ranks aren't in this plan; Apply never takes points back.", self.legacy()[1])
+
+    def test_the_legacy_panel_follows_the_window_and_the_part_switch(self):
+        L.run("LegacySystemFrame:Hide(); FA.RefreshLegacy()")
+        self.assertFalse(L.eval("ForeverArmouryLegacyPanel.shown"))
+        L.run("LegacySystemFrame:Show(); FA.RefreshLegacy()")
+        self.assertTrue(L.eval("ForeverArmouryLegacyPanel.shown"))
+        L.run("FA.SetPart('legacy', false)")
+        self.assertFalse(L.eval("ForeverArmouryLegacyPanel.shown"))
+        self.assertTrue(L.eval("ForeverArmouryTalentPanel.shown"))   # the others are as they were
+        L.run("FA.SetPart('legacy', true)")
+        self.assertTrue(L.eval("ForeverArmouryLegacyPanel.shown"))
+        self.assertTrue(L.eval("FA.PartOn('legacy')"))   # on by default
+        self.assertEqual(L.eval("FA.PARTS[3].key"), "legacy")
+        # the window loading later hooks it once
+        hooks = L.eval("#HOOKS")
+        L.run("EVENT('ADDON_LOADED', 'Blizzard_LegacySystem')")
+        self.assertEqual(L.eval("#HOOKS"), hooks)
+
+    def test_the_glow_waits_for_the_tree_to_show_its_button(self):
+        L.run("LEGACY_ON = true; FA.ImportText('%s')" % SAMPLE)
+        self.assertEqual(self.lit(), ["Working Overtime"])
+        L.run("LBUTTONS[110290].shown = false; FA.RefreshLegacy()")   # a button the tree hides
+        self.assertEqual(self.lit(), [])
+        # no tree panel, or no tree page: no glow, no error
+        L.run("LBUTTONS[110290].shown = true; SAVED = LegacySystemFrame.TreePage; LegacySystemFrame.TreePage = {}; FA.RefreshLegacy()")
+        self.assertEqual(self.lit(), [])
+        L.run("LegacySystemFrame.TreePage = false; FA.RefreshLegacy()")   # (the mock answers a function for a key that is nil)
+        self.assertEqual(self.lit(), [])
+        L.run("LegacySystemFrame.TreePage = SAVED; FA.RefreshLegacy()")
+        self.assertEqual(self.lit(), ["Working Overtime"])
+
+    def test_slash_legacy(self):
+        L.run("LTOGGLED = 0; LegacySystemFrame:Show()")
+        L.eval("function(c) SlashCmdList.FOREVERARMOURY(c) end")("legacy")
+        self.assertEqual(L.eval("LTOGGLED"), 1)
+        self.assertFalse(L.eval("LegacySystemFrame.shown"))
+        # opened again, it goes to the trees page (the game's event for it), once, not when it was already open
+        L.run("EventRegistry = { TriggerEvent = function(_, name, id) PAGES = (PAGES or '') .. name .. id .. ' ' end }; PAGES = ''")
+        L.eval("function(c) SlashCmdList.FOREVERARMOURY(c) end")("legacy")
+        self.assertEqual(L.eval("PAGES"), "Legacy.SelectPage3 ")
+        L.run("EventRegistry = nil")
+        self.assertEqual(L.eval("LTOGGLED"), 2)
+        self.assertTrue(L.eval("ForeverArmouryLegacyPanel.shown"))
+        L.eval("function(c) SlashCmdList.FOREVERARMOURY(c) end")("legacy off")
+        self.assertIn("Legacy plans off.", L.eval("PRINTED"))
+        self.assertFalse(L.eval("ForeverArmouryLegacyPanel.shown"))
+        L.eval("function(c) SlashCmdList.FOREVERARMOURY(c) end")("legacy")
+        self.assertIn("The Legacy plans part is off. /fa legacy on turns it on.", L.eval("PRINTED"))
+        self.assertEqual(L.eval("LTOGGLED"), 2)
+        L.eval("function(c) SlashCmdList.FOREVERARMOURY(c) end")("legacy on")
+        self.assertIn("Legacy plans on.", L.eval("PRINTED"))
+        self.assertTrue(L.eval("FA.PartOn('legacy')"))
+        # the game's opener doing nothing (the Legacy track hasn't begun): said
+        L.run("SAVED = ToggleLegacySystemUI; ToggleLegacySystemUI = function() end; LegacySystemFrame:Hide(); PRINTED = ''")
+        L.eval("function(c) SlashCmdList.FOREVERARMOURY(c) end")("legacy")
+        self.assertIn("The game didn't open the Legacy window.", L.eval("PRINTED"))
+        # a client with no opener at all, and no window
+        L.run("ToggleLegacySystemUI = nil; SAVEDF = LegacySystemFrame; LegacySystemFrame = nil; PRINTED = ''")
+        L.eval("function(c) SlashCmdList.FOREVERARMOURY(c) end")("legacy")
+        self.assertIn("This client has no Legacy window to open.", L.eval("PRINTED"))
+        L.run("ToggleLegacySystemUI = SAVED; LegacySystemFrame = SAVEDF")
+
+    def test_one_paste_imports_a_build_and_a_legacy_plan(self):
+        L.run("LEGACY_ON = true")
+        ok, said = L.eval("function(t) return FA.ImportText(t) end")("FAT1-warrior-Arms-" + GATED + "\n" + SAMPLE)
+        self.assertTrue(ok)
+        self.assertEqual(said, "1 Warrior build imported. Following Arms. 1 Legacy plan imported for the account. Following Gatherer's Path.")
+        # with a gear route too, and in that order
+        ok, said = L.eval("function(t) return FA.ImportText(t) end")(ROUTE_CODE + " " + SAMPLE_2)
+        self.assertEqual(said, "1 Warrior gear route imported. 1 Legacy plan imported for the account.")   # Second is a plan more: the one followed stays
+        self.assertEqual(L.eval("FA.Legacy.Active().name"), "Gatherer's Path")
+
+    def test_import_errors_name_the_legacy_code_pasted(self):
+        imp = L.eval("function(t) return FA.ImportText(t) end")
+        self.assertIn("isn't a build code", imp("nonsense")[1])
+        self.assertIn("Plan 1 of that code doesn't read", imp("FAL1-70425-A-0101")[1])   # only a Legacy code: its error
+        self.assertIn("newer version", imp("FAL2-70425-A-" + SAMPLE_RANKS)[1])
+        self.assertIn("Build 1 of that code doesn't read", imp("FAT2-70170-warrior-A-0a0 FAL1-70425-A-0101")[1])   # both broken: the build code's error
+        ok, said = imp("FAT1-warrior-Arms-0101 FAL1-70425-A-0101")   # the build reads, the plan doesn't: both said
+        self.assertTrue(ok)
+        self.assertIn("1 Warrior build imported.", said)
+        self.assertIn("Plan 1 of that code doesn't read", said)
+        self.assertEqual(L.eval("#FA.Legacy.Plans()"), 0)
+        ok, said = imp("FAT1-warrior-Arms-0z " + SAMPLE)   # the plan reads, the build doesn't
+        self.assertTrue(ok)
+        self.assertIn("1 Legacy plan imported for the account.", said)
+        self.assertIn("Build 1 of that code doesn't read", said)
+        ok, said = imp("FAG1-warrior-0 " + SAMPLE)   # a broken gear route beside a good plan
+        self.assertTrue(ok)
+        self.assertIn("Route 1 of that code doesn't read", said)
+
+    def test_export_puts_the_plans_in_the_box(self):
+        L.run("PRINTED = ''")
+        exportBtn = "for _, f in ipairs(ForeverArmouryLegacyPanel.children) do if f.kind == 'Button' and f.text == 'Export' then f.scripts.OnClick(f) end end"
+        L.run(exportBtn)
+        self.assertIn("No Legacy plans yet.", L.eval("PRINTED"))
+        L.run("FA.ImportText('%s')" % SAMPLE)
+        L.run(exportBtn)
+        self.assertEqual(L.eval("ForeverArmouryImportText.text"), SAMPLE)
+        self.assertIn("Every Legacy plan.", L.eval("ForeverArmouryImport.status.text"))
+        # the box's own Export gives the class's builds and the account's plans, one a line
+        L.run("FA.ImportText('FAT1-warrior-Arms-" + GATED + "')")
+        L.run("for _, f in ipairs(ForeverArmouryImport.children) do if f.kind == 'Button' and f.text == 'Export' then f.scripts.OnClick(f) end end")
+        text = L.eval("ForeverArmouryImportText.text")
+        self.assertEqual(text.split("\n"), ["FAT3-0-warrior-Arms-" + GATED + "-0", SAMPLE])   # a FAT1 build is written with build 0
+        self.assertIn("Every build of your class and every Legacy plan.", L.eval("ForeverArmouryImport.status.text"))
 
     def test_import_errors_name_the_code_pasted(self):
         imp = L.eval("function(t) return FA.ImportText(t) end")

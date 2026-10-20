@@ -22,34 +22,43 @@ local hovers = {}  -- talent button -> the highlight of the strip icon under the
 local hovering     -- the strip icon under the mouse
 
 --[[ ---- the highlights in the trees ---- ]]
---[[ A frame of ours over a talent's button, kept in a set by button: the client's talent frame pools and reuses its
-     buttons, so nothing is written on them. Lights the talent's own and hides the rest of the set; r, g, b tint it. ]]
-local function lightOn(set, t, r, g, b, pulses)
+--[[ A frame of ours over each of a list of buttons, kept in a set by button: the client's talent frame pools and reuses
+     its buttons, so nothing is written on them. Lights those that are shown and hides the rest of the set; r, g, b tint
+     it. The Legacy panel lights its perks' buttons with it (FA.LightButtons). ]]
+local function lightButtons(set, buttons, r, g, b, pulses)
   for _, o in pairs(set) do o.frame:Hide() end
-  local button = t and Talents.Button(t)
-  if not button or not button:IsShown() then return end
-  local o = set[button]
-  if not o then
-    local f = CreateFrame("Frame", nil, button)
-    f:SetAllPoints(button)
-    local tex = f:CreateTexture(nil, "OVERLAY")
-    tex:SetTexture("Interface\\Buttons\\CheckButtonHilight")
-    tex:SetBlendMode("ADD")
-    if r then tex:SetVertexColor(r, g, b) end
-    tex:SetPoint("TOPLEFT", -4, 4)
-    tex:SetPoint("BOTTOMRIGHT", 4, -4)
-    o = { frame = f }
-    if pulses then
-      o.pulse = f:CreateAnimationGroup()
-      o.pulse:SetLooping("BOUNCE")
-      local a = o.pulse:CreateAnimation("Alpha")
-      a:SetFromAlpha(1); a:SetToAlpha(0.35); a:SetDuration(0.7)
+  for _, button in ipairs(buttons) do
+    if button:IsShown() then
+      local o = set[button]
+      if not o then
+        local f = CreateFrame("Frame", nil, button)
+        f:SetAllPoints(button)
+        local tex = f:CreateTexture(nil, "OVERLAY")
+        tex:SetTexture("Interface\\Buttons\\CheckButtonHilight")
+        tex:SetBlendMode("ADD")
+        if r then tex:SetVertexColor(r, g, b) end
+        tex:SetPoint("TOPLEFT", -4, 4)
+        tex:SetPoint("BOTTOMRIGHT", 4, -4)
+        o = { frame = f }
+        if pulses then
+          o.pulse = f:CreateAnimationGroup()
+          o.pulse:SetLooping("BOUNCE")
+          local a = o.pulse:CreateAnimation("Alpha")
+          a:SetFromAlpha(1); a:SetToAlpha(0.35); a:SetDuration(0.7)
+        end
+        set[button] = o
+      end
+      o.frame:SetFrameLevel(button:GetFrameLevel() + 5)   -- every time: a recycled button may have a new level, and the overlay stays above it
+      o.frame:Show()
+      if o.pulse then o.pulse:Play() end
     end
-    set[button] = o
   end
-  o.frame:SetFrameLevel(button:GetFrameLevel() + 5)   -- every time: a recycled button may have a new level, and the overlay stays above it
-  o.frame:Show()
-  if o.pulse then o.pulse:Play() end
+end
+FA.LightButtons = lightButtons
+
+--[[ The talent's own button lit, the rest of the set hidden. ]]
+local function lightOn(set, t, r, g, b, pulses)
+  lightButtons(set, { Talents.Button(t) }, r, g, b, pulses)
 end
 
 --[[ The next talent: the game's own glow, pulsing. ]]
@@ -500,7 +509,7 @@ local function makeImportBox()
   hint:SetPoint("TOPLEFT", 16, -34)
   hint:SetPoint("TOPRIGHT", -16, -34)
   hint:SetJustifyH("LEFT")
-  hint:SetText("Paste a build code or a gear route code from the site (Copy for addon) and press Import. Export puts your builds' code here to copy.")
+  hint:SetText("Paste a build code, a gear route code or a Legacy plan code from the site (Copy for addon) and press Import. Export puts your builds' and Legacy plans' codes here to copy.")
 
   local scroll = CreateFrame("ScrollFrame", "ForeverArmouryImportScroll", importBox, "UIPanelScrollFrameTemplate")
   scroll:SetPoint("TOPLEFT", 18, -64)
@@ -537,9 +546,12 @@ local function makeImportBox()
   export:SetPoint("LEFT", import, "RIGHT", 6, 0)
   export:SetText("Export")
   export:SetScript("OnClick", function()
-    local code = FA.ExportCode()
-    if code then box:SetText(code); box:SetFocus(); box:HighlightText(); importBox.status:SetText("Every build of your class. Ctrl+C copies it; paste it into the site's Import box.")
-    else importBox.status:SetText("No builds for this class yet.") end
+    local builds, plans = FA.ExportCode(), FA.Legacy and FA.Legacy.Export()
+    if builds or plans then
+      box:SetText(builds and plans and (builds .. "\n" .. plans) or builds or plans); box:SetFocus(); box:HighlightText()
+      importBox.status:SetText((builds and plans and "Every build of your class and every Legacy plan." or builds and "Every build of your class." or "Every Legacy plan.") ..
+        " Ctrl+C copies it; paste it into the site's Import box.")
+    else importBox.status:SetText("No builds for this class or Legacy plans yet.") end
   end)
   local close = CreateFrame("Button", nil, importBox, "UIPanelButtonTemplate")
   close:SetSize(80, 22)
@@ -548,17 +560,26 @@ local function makeImportBox()
   close:SetScript("OnClick", function() importBox:Hide() end)
 end
 
---[[ Reads the codes in a pasted text and keeps their builds and gear routes; says what came of it in the box and in
-     chat. One paste can hold both kinds. When neither reads, the error is the gear code's if the text has one and no
-     build code, else the build code's; when one kind reads and the other doesn't, the other's error is added. ]]
+--[[ Reads the codes in a pasted text and keeps their builds, gear routes and Legacy plans; says what came of it in
+     the box and in chat. One paste can hold all three kinds. When none reads, the error is that of the first kind the
+     text has a code of (builds, then gear, then Legacy), else the build code's; when some kinds read and another
+     doesn't, the other's error is added. ]]
 function FA.ImportText(text)
   local builds, err, notes = FA.Code.Read(text)
   local routes, gerr, gnotes = nil, nil, nil
   if FA.GearCode then routes, gerr, gnotes = FA.GearCode.Read(text) end
+  local plans, lerr, lnotes = nil, nil, nil
+  if FA.LegacyCode then plans, lerr, lnotes = FA.LegacyCode.Read(text) end
   local hasBuild = tostring(text or ""):find("FAT%d%d?%d?%-") ~= nil
   local hasGear = FA.GearCode and FA.GearCode.Find(text)
-  if not builds and not routes then
-    if hasGear and not hasBuild then err = gerr end
+  local hasLegacy = FA.LegacyCode and FA.LegacyCode.Find(text)
+  --[[ the errors of the kinds the text has a code of and that didn't read, in order ]]
+  local errors = {}
+  if hasBuild and not builds then errors[#errors + 1] = err end
+  if hasGear and not routes then errors[#errors + 1] = gerr end
+  if hasLegacy and not plans then errors[#errors + 1] = lerr end
+  if not builds and not routes and not plans then
+    err = errors[1] or err
     if importBox then importBox.status:SetText("|cffff6060" .. err .. "|r") end
     return false, err
   end
@@ -584,16 +605,33 @@ function FA.ImportText(text)
     for _, n in ipairs(gnotes or {}) do said = said .. " " .. n end
     if rmine > 0 and FA.Gear.Spec() == nil then said = said .. " Follow a build, or pick the route's spec in the gear panel." end
   end
-  if builds and not routes and hasGear then said = said .. " " .. gerr end
-  if routes and not builds and hasBuild then said = said .. " " .. err end
+  if plans then
+    local count = FA.Legacy.Add(plans)
+    said = said .. (said ~= "" and " " or "") .. count .. (count == 1 and " Legacy plan" or " Legacy plans") .. " imported for the account."
+    for _, n in ipairs(lnotes or {}) do said = said .. " " .. n end
+    local other = 0
+    for _, p in ipairs(plans) do if FA.Legacy.Differs(p) then other = other + 1 end end
+    if other > 0 then
+      said = said .. " " .. other .. (other == 1 and " is" or " are") .. " from another client build than the addon's Legacy perks (" .. FA.Legacy.BUILD ..
+        "), so " .. (other == 1 and "it is" or "they are") .. " shown and never bought."
+    end
+    --[[ the account with one plan and none followed follows it, as a character does a build ]]
+    if not FA.Legacy.Active() and #FA.Legacy.Plans() == 1 then
+      local only = FA.Legacy.Plans()[1]
+      FA.Legacy.SetActive(only.id)
+      said = said .. " Following " .. FA.ShownName(only) .. "."
+    end
+  end
+  for _, e in ipairs(errors) do said = said .. " " .. e end
   if importBox then importBox.status:SetText(said); importBox.box:SetText("") end
   FA.Print(said)
   FA.Refresh()
   if FA.RefreshGear then FA.RefreshGear() end
+  if FA.RefreshLegacy then FA.RefreshLegacy() end
   return true, said
 end
 
-function FA.OpenImport(text)
+function FA.OpenImport(text, note)
   if not importBox then makeImportBox() end
   importBox:Show()
   importBox.status:SetText("")
@@ -601,7 +639,7 @@ function FA.OpenImport(text)
     importBox.box:SetText(text)
     importBox.box:SetFocus()
     importBox.box:HighlightText()
-    importBox.status:SetText("Every build of your class. Ctrl+C copies it; paste it into the site's Import box.")
+    importBox.status:SetText(note or "Every build of your class. Ctrl+C copies it; paste it into the site's Import box.")
   else
     importBox.box:SetText("")
     importBox.box:SetFocus()
