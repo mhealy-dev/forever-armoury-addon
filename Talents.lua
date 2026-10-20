@@ -8,7 +8,8 @@
      data here. Points are staged with C_Traits.PurchaseRank and applied with C_ClassTalents.CommitConfig, as the
      window's own Apply button does; C_Traits.RollbackConfig drops what's staged. Each of the two specs (dual spec) has
      its own config. The old API (GetTalentInfo by tab and index, LearnTalent, TalentFrame) isn't in the Forever client
-     at all, but a client that has it gets the same answers from it, so the rest of the addon has one path.
+     at all, but a client that has it gets the same answers from it, so the rest of the addon has one path. A trait
+     function the client lacks is said in chat once, by name, and answers nil, so the rest carries on without a Lua error.
 
      A view is one spec's talents: { trees = { { name, icon }, ... }, cells = { [tab] = { [cell] = talent } } }, a
      talent being { tab, cell, row, col, name, icon, rank, max, node }; rank is what's spent, staged points included, and
@@ -43,19 +44,35 @@ FA.Talents = Talents
 local views = {}   -- configID (or "legacy") -> view
 local told = 0     -- how many talents that didn't sort chat was last told of: it's told again only when that changes
 
+local missing = {}   -- the game functions chat has been told are missing, by name
+--[[ Calls a function of the game's trait system by name ("C_Traits.GetNodeInfo") and answers what it does. One the
+     client doesn't have answers nil, with one line in chat naming it (once), not a Lua error that stops the rest. ]]
+local function game(path, ...)
+  local ns, name = path:match("^(.-)%.(.+)$")
+  local fn = _G[ns] and _G[ns][name]
+  if type(fn) ~= "function" then
+    if not missing[path] then
+      missing[path] = true
+      FA.Print("This client has no " .. path .. ", so the addon can't use it for your talents.")
+    end
+    return nil
+  end
+  return fn(...)
+end
+
 local function hasTraits() return C_Traits and C_ClassTalents and C_ClassTalents.GetActiveConfigID and true or false end
 --[[ The active spec's config. GetActiveConfigID can be nil early on, and the game's own window then takes the active
      spec group's combat config, so this does too. ]]
 local function activeConfig()
   if not hasTraits() then return nil end
-  local configID = C_ClassTalents.GetActiveConfigID()
+  local configID = game("C_ClassTalents.GetActiveConfigID")
   if not configID and C_SpecializationInfo and C_SpecializationInfo.GetCombatConfigIDForSpecGroup and C_SpecializationInfo.GetActiveSpecGroup then
     configID = C_SpecializationInfo.GetCombatConfigIDForSpecGroup(C_SpecializationInfo.GetActiveSpecGroup())
   end
   return configID
 end
 local function treeOf(configID)
-  local info = C_Traits.GetConfigInfo(configID)
+  local info = game("C_Traits.GetConfigInfo", configID)
   return info and info.treeIDs and info.treeIDs[1]
 end
 
@@ -123,8 +140,8 @@ end
 
 local function nodeNameAndIcon(configID, node)
   local entryID = node.entryIDs and node.entryIDs[1]
-  local entry = entryID and C_Traits.GetEntryInfo(configID, entryID)
-  local def = entry and entry.definitionID and C_Traits.GetDefinitionInfo(entry.definitionID)
+  local entry = entryID and game("C_Traits.GetEntryInfo", configID, entryID)
+  local def = entry and entry.definitionID and game("C_Traits.GetDefinitionInfo", entry.definitionID)
   if not def then return nil, nil end
   local name = def.overrideName or (def.spellID and C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(def.spellID))
   local icon = def.overrideIcon or (def.spellID and C_Spell and C_Spell.GetSpellTexture and C_Spell.GetSpellTexture(def.spellID))
@@ -135,14 +152,14 @@ end
 local function readTraits(configID)
   local treeID = treeOf(configID)
   if not treeID then return nil end
-  local groups = C_Traits.GetGroupDisplayInfoByTreeID(treeID)
+  local groups = game("C_Traits.GetGroupDisplayInfoByTreeID", treeID)
   if not groups or #groups == 0 then return nil end
   table.sort(groups, function(a, b) return (a.orderIndex or 0) < (b.orderIndex or 0) end)
   local out, tabOf = { trees = {}, cells = {}, configID = configID }, {}
   for i, g in ipairs(groups) do out.trees[i] = { name = g.displayName, icon = g.icon }; out.cells[i] = {}; tabOf[g.groupID] = i end
   local nodes = {}
-  for _, nodeID in ipairs(C_Traits.GetTreeNodes(treeID) or {}) do
-    local n = C_Traits.GetNodeInfo(configID, nodeID)
+  for _, nodeID in ipairs(game("C_Traits.GetTreeNodes", treeID) or {}) do
+    local n = game("C_Traits.GetNodeInfo", configID, nodeID)
     local tab = n and n.groupIDs and n.groupIDs[1] and tabOf[n.groupIDs[1]]
     if tab and n.maxRanks and n.maxRanks > 0 then nodes[#nodes + 1] = { tab = tab, info = n } end
   end
@@ -226,7 +243,7 @@ function Talents.Forget() views = {} end
 function Talents.Unspent()
   local configID = activeConfig()
   if configID and C_Traits.GetTreeCurrencyInfo then
-    local currencies = C_Traits.GetTreeCurrencyInfo(configID, treeOf(configID), false)
+    local currencies = game("C_Traits.GetTreeCurrencyInfo", configID, treeOf(configID), false)
     if currencies and currencies[1] then return currencies[1].quantity or 0 end
   end
   if hasTraits() and C_ClassTalents.HasUnspentTalentPoints then
@@ -243,7 +260,7 @@ function Talents.OtherSpec()
   if not (hasTraits() and C_SpecializationInfo and C_SpecializationInfo.GetActiveSpecGroup and GetNumSpecGroups) then return nil end
   if (GetNumSpecGroups() or 1) < 2 then return nil end
   local other = C_SpecializationInfo.GetActiveSpecGroup() == 1 and 2 or 1
-  local configID = C_SpecializationInfo.GetCombatConfigIDForSpecGroup(other)
+  local configID = game("C_SpecializationInfo.GetCombatConfigIDForSpecGroup", other)
   local view = configID and Talents.View(configID)
   if not view then return nil end
   return view, other
@@ -253,7 +270,7 @@ end
 --[[ Whether the talent window has points bought but not applied yet: the addon leaves those to the window. ]]
 function Talents.HasStaged()
   local configID = activeConfig()
-  return configID and C_Traits.ConfigHasStagedChanges and C_Traits.ConfigHasStagedChanges(configID) and true or false
+  return configID and C_Traits.ConfigHasStagedChanges and game("C_Traits.ConfigHasStagedChanges", configID) and true or false
 end
 Talents.STAGED = "The talent window has changes waiting. Apply or undo them there first."
 
@@ -268,7 +285,7 @@ end
 --[[ With a point staged: true, or false and why when the game says the change can't be committed. ]]
 local function canCommit()
   if not (hasTraits() and C_ClassTalents.CanChangeTalents) then return true end
-  local canChange, canAdd, err = C_ClassTalents.CanChangeTalents()
+  local canChange, canAdd, err = game("C_ClassTalents.CanChangeTalents")
   if canChange or canAdd then return true end
   local why = (err and err ~= "") and err or "You can't change talents right now."
   return false, why:find("[%.!?]$") and why or why .. "."
@@ -285,15 +302,15 @@ function Talents.Learn(list)
   if configID then
     if Talents.HasStaged() then return false, Talents.STAGED end
     for i, t in ipairs(list) do
-      if not C_Traits.PurchaseRank(configID, t.node) then
-        C_Traits.RollbackConfig(configID)
+      if not game("C_Traits.PurchaseRank", configID, t.node) then
+        game("C_Traits.RollbackConfig", configID)
         Talents.Forget()
         return false, "The game wouldn't take point " .. i .. " (" .. (t.name or "?") .. "). Nothing was spent."
       end
       if i == 1 then
         local ok, why = canCommit()
         if not ok then
-          C_Traits.RollbackConfig(configID)
+          game("C_Traits.RollbackConfig", configID)
           Talents.Forget()
           return false, why .. " Nothing was spent."
         end
@@ -301,10 +318,10 @@ function Talents.Learn(list)
     end
     --[[ true from CommitConfig only means the cast started: CommitFailed rolls back if the game fails it later ]]
     committing, calling = configID, true
-    local started = C_ClassTalents.CommitConfig()
+    local started = game("C_ClassTalents.CommitConfig")
     calling = false
     if not started or committing ~= configID then
-      if committing then C_Traits.RollbackConfig(configID) end
+      if committing then game("C_Traits.RollbackConfig", configID) end
       committing = nil
       Talents.Forget()
       return false, "The game wouldn't apply the talents. Nothing was spent."
@@ -322,7 +339,7 @@ end
 
 function Talents.CommitFailed(configID)
   if not committing or (configID and configID ~= committing) then return false end
-  C_Traits.RollbackConfig(committing)
+  game("C_Traits.RollbackConfig", committing)
   committing = nil
   Talents.Forget()
   return not calling   -- inside CommitConfig, Learn says it

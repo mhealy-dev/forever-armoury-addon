@@ -52,6 +52,15 @@ function FA.Print(text)
   (DEFAULT_CHAT_FRAME or ChatFrame1):AddMessage("|cffffd100Forever Armoury:|r " .. tostring(text))
 end
 
+--[[ A name as text to draw: a | in it is doubled, so a |c or |H in a build's name shows as typed instead of taking effect. ]]
+function FA.Esc(text) return (tostring(text or ""):gsub("|", "||")) end
+
+--[[ A build's name to draw: escaped, and "Unnamed" for none. ]]
+function FA.ShownName(build) return build.name ~= "" and FA.Esc(build.name) or "Unnamed" end
+
+--[[ The character's class as the site names it ("warrior"). ]]
+function FA.SetClass() FA.class = (select(2, UnitClass("player")) or ""):lower() end
+
 --[[ The saved variables, with anything a new version added filled in. ]]
 function FA.Init()
   ForeverArmouryDB = ForeverArmouryDB or {}
@@ -63,6 +72,16 @@ function FA.Init()
   for key, on in pairs(DEFAULTS.parts) do if db.parts[key] == nil then db.parts[key] = on end end
   ForeverArmouryCharDB = ForeverArmouryCharDB or {}
   FA.db, FA.char = db, ForeverArmouryCharDB
+  FA.SetClass()   -- not at PLAYER_LOGIN: an import before it needs the class
+  if FA.RepairBuilds then
+    local dropped, repaired = FA.RepairBuilds()
+    if dropped > 0 or repaired > 0 then
+      local said = {}
+      if dropped > 0 then said[#said + 1] = "dropped " .. dropped .. (dropped == 1 and " saved build" or " saved builds") .. " it couldn't read" end
+      if repaired > 0 then said[#said + 1] = "repaired " .. repaired .. (repaired == 1 and " saved build" or " saved builds") .. " with a missing name or id" end
+      FA.Print("Your saved builds were damaged: " .. table.concat(said, ", and ") .. ".")
+    end
+  end
 end
 
 function FA.PartOn(key) return FA.db and FA.db.parts[key] ~= false end
@@ -104,7 +123,7 @@ SlashCmdList.FOREVERARMOURY = function(msg)
     local list = FA.BuildsFor and FA.BuildsFor(FA.class) or {}
     if #list == 0 then FA.Print("No builds for this class yet. /fa import to paste some in.") end
     local active = FA.ActiveBuild and FA.ActiveBuild()
-    for _, b in ipairs(list) do FA.Print((active == b and "> " or "  ") .. b.name .. " (" .. math.floor(#b.picks / 2) .. " points)") end
+    for _, b in ipairs(list) do FA.Print((active == b and "> " or "  ") .. FA.ShownName(b) .. " (" .. math.floor(#b.picks / 2) .. " points)") end
   elseif cmd == "plan" then
     local on = rest:lower()
     if on == "on" then FA.SetPart("plan", true) elseif on == "off" then FA.SetPart("plan", false) else FA.SetPart("plan", not FA.PartOn("plan")) end
@@ -126,8 +145,49 @@ SlashCmdList.FOREVERARMOURY = function(msg)
   end
 end
 
+--[[ The trainer's reset: once it's accepted, what Apply does after it. The reset itself, and its cost, stay the game's
+     own dialog, Blizzard's CONFIRM_TALENT_WIPE popup; this is hooked after the popup's OnAccept, so a cancelled dialog
+     says nothing. ]]
+function FA.TrainerReset()
+  local build = FA.PartOn("plan") and FA.ActiveBuild()
+  local due = build and FA.PointsAfterReset(build)
+  if due then
+    FA.Print("After the reset, open your talents and press Apply: it spends " .. due .. (due == 1 and " point" or " points") .. " as " ..
+      (build.name ~= "" and FA.Esc(build.name) or "your build") .. " says.")
+  end
+end
+function FA.HookWipe()
+  local dialog = StaticPopupDialogs and StaticPopupDialogs.CONFIRM_TALENT_WIPE
+  if not (dialog and type(dialog.OnAccept) == "function" and hooksecurefunc) then
+    FA.Print("The trainer's reset dialog (CONFIRM_TALENT_WIPE) isn't there, so the addon won't say what Apply spends after a reset.")
+    return
+  end
+  hooksecurefunc(dialog, "OnAccept", FA.TrainerReset)
+end
+
+--[[ The panel redraws once a frame however many events come: a burst of TRAIT_NODE_CHANGED while points are staged, or
+     one event after another at a login. What's cached is dropped at once, so a read in between asks the game. ]]
+local refreshing
+function FA.RefreshSoon()
+  FA.Talents.Forget()
+  if refreshing then return end
+  if not (C_Timer and C_Timer.After) then
+    if FA.Refresh then FA.Refresh() end
+    return
+  end
+  refreshing = true
+  C_Timer.After(0, function()
+    refreshing = false
+    if FA.Refresh then FA.Refresh() end
+  end)
+end
+
 --[[ Events: the saved variables once this addon has loaded, the talent window once Blizzard's talent UI has (it
-     loads on demand), and the character's points and level as they change. ]]
+     loads on demand), and the character's points, level and combat as they change. A name the game doesn't know is
+     said in chat, since registering it fails without a word. ]]
+local EVENTS = { "PLAYER_LEVEL_UP", "PLAYER_TALENT_UPDATE", "TRAIT_NODE_CHANGED", "TRAIT_CONFIG_UPDATED",
+  "ACTIVE_TALENT_GROUP_CHANGED", "ACTIVE_COMBAT_CONFIG_CHANGED", "CHARACTER_POINTS_CHANGED", "CONFIG_COMMIT_FAILED",
+  "PLAYER_REGEN_ENABLED", "PLAYER_REGEN_DISABLED" }
 local events = CreateFrame("Frame")
 events:RegisterEvent("ADDON_LOADED")
 events:RegisterEvent("PLAYER_LOGIN")
@@ -136,11 +196,10 @@ events:SetScript("OnEvent", function(_, event, arg1)
     if arg1 == ADDON then FA.Init()
     elseif FA.Talents.Loaded(arg1) and FA.HookTalentFrame then FA.HookTalentFrame() end
   elseif event == "PLAYER_LOGIN" then
-    FA.class = (select(2, UnitClass("player")) or ""):lower()   -- "warrior", as the site names it
-    for _, e in ipairs({ "PLAYER_LEVEL_UP", "PLAYER_TALENT_UPDATE", "TRAIT_NODE_CHANGED", "TRAIT_CONFIG_UPDATED",
-      "ACTIVE_TALENT_GROUP_CHANGED", "CHARACTER_POINTS_CHANGED", "CONFIG_COMMIT_FAILED", "CONFIRM_TALENT_WIPE" }) do
-      pcall(events.RegisterEvent, events, e)
+    for _, e in ipairs(EVENTS) do
+      if not pcall(events.RegisterEvent, events, e) then FA.Print("The game has no event " .. e .. ", so the addon won't hear it.") end
     end
+    FA.HookWipe()
     if FA.HookTalentFrame then FA.HookTalentFrame() end
     if FA.HookCharacterFrame then FA.HookCharacterFrame() end
     if FA.SetupOptions then FA.SetupOptions() end
@@ -148,21 +207,9 @@ events:SetScript("OnEvent", function(_, event, arg1)
     --[[ The commit is a cast, so the game can turn it down after CommitConfig said yes: what the addon staged is
          rolled back here. A commit of the window's own is the window's to report. ]]
     if FA.Talents.CommitFailed(arg1) then FA.Print("The game didn't apply the talents, so they were rolled back. Nothing was spent.") end
-    FA.Talents.Forget()
-    if FA.Refresh then FA.Refresh() end
-  elseif event == "CONFIRM_TALENT_WIPE" then
-    --[[ At a trainer's reset, before it's confirmed: what Apply does after it. The reset itself, and its cost, stay
-         the game's own dialog. ]]
-    local build = FA.PartOn("plan") and FA.ActiveBuild()
-    local points = build and FA.Code.Points(build.picks)
-    if points then
-      local due = math.min(#points, math.max(0, (UnitLevel("player") or 1) - FA.FirstLevel() + 1))
-      FA.Print("After the reset, open your talents and press Apply: it spends " .. due .. (due == 1 and " point" or " points") .. " as " ..
-        (build.name ~= "" and build.name or "your build") .. " says.")
-    end
+    FA.RefreshSoon()
   else
     if event == "TRAIT_CONFIG_UPDATED" then FA.Talents.Committed(arg1) end
-    FA.Talents.Forget()
-    if FA.Refresh then FA.Refresh() end
+    FA.RefreshSoon()
   end
 end)

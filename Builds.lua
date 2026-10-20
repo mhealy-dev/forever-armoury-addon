@@ -13,17 +13,57 @@ function FA.BuildsFor(cls)
   return list
 end
 
+--[[ The saved builds as they load: a list per class of tables with picks that are text, which is what the rest of the
+     addon counts on (picks that don't read are answered where they are used, and kept, since a newer addon may read
+     what this one doesn't). One that isn't a table, or has no picks, is dropped; a name that isn't text is emptied, and
+     an id that isn't a number or is another build's is given a new one. nextId is kept past every id, and the
+     character's followed build is cleared when it is gone. Answers how many were dropped and how many repaired. ]]
+function FA.RepairBuilds()
+  local dropped, repaired, seen = 0, 0, {}
+  local builds = FA.db.builds
+  for cls, list in pairs(builds) do
+    if type(cls) ~= "string" or type(list) ~= "table" then
+      builds[cls] = nil
+      dropped = dropped + 1
+    else
+      local kept = {}
+      for _, b in ipairs(list) do
+        if type(b) ~= "table" or type(b.picks) ~= "string" or b.picks == "" then
+          dropped = dropped + 1
+        else
+          local fixed = false
+          if type(b.name) ~= "string" then b.name = ""; fixed = true end
+          if type(b.id) ~= "number" or seen[b.id] then b.id = nil; fixed = true else seen[b.id] = true end
+          if b.build ~= nil and b.build ~= false and type(b.build) ~= "number" then b.build = nil; fixed = true end
+          if fixed then repaired = repaired + 1 end
+          kept[#kept + 1] = b
+        end
+      end
+      builds[cls] = kept
+    end
+  end
+  for _, list in pairs(builds) do
+    for _, b in ipairs(list) do
+      if not b.id then b.id = FA.db.nextId end
+      FA.db.nextId = math.max(FA.db.nextId, b.id + 1)
+    end
+  end
+  if FA.char.build and not FA.FindBuild(FA.class, FA.char.build) then FA.char.build = nil end
+  return dropped, repaired
+end
+
 --[[ Keeps the builds a code gave (FA.Code.Read), each with the game build it's from, so Export gives it back as it
-     came. A build with the name of one already kept for its class replaces that one's points and build and keeps its
-     id, so pasting a build again after changing it on the site updates it, and the characters following it stay on
-     it. Answers how many were for this character's class, and how many for others. ]]
+     came. A build with the name and points of one already kept for its class updates that one's game build and keeps
+     its id, so pasting a build again, as the site has it now, leaves the characters following it on it; a build with
+     the same name and other points is another build (two Arms, two unnamed). Answers how many were for this
+     character's class, and how many for others. ]]
 function FA.AddBuilds(builds)
   local mine, others = 0, 0
   for _, b in ipairs(builds) do
     local list, found = FA.BuildsFor(b.cls), nil
-    for _, old in ipairs(list) do if old.name == b.name then found = old end end
+    for _, old in ipairs(list) do if old.name == b.name and old.picks == b.picks then found = old end end
     local build = b.build or false
-    if found then found.picks, found.build = b.picks, build
+    if found then found.build = build
     else
       list[#list + 1] = { id = FA.db.nextId, name = b.name, picks = b.picks, build = build }
       FA.db.nextId = FA.db.nextId + 1
@@ -71,6 +111,17 @@ function FA.ExportCode()
   local codes = {}
   for i, g in ipairs(groups) do codes[i] = FA.Code.Write(g.builds, g.build) end
   return table.concat(codes, "\n")
+end
+
+--[[ How many points Apply would spend after the trainer's reset: all the points the character has, as the game counts
+     them (spent and unspent, which a reset makes all unspent), as far as the build goes. Answers nil for a build that
+     doesn't read. When the game won't say how many points there are, the character's level says. ]]
+function FA.PointsAfterReset(build)
+  local points = FA.Code.Points(build.picks)
+  if not points then return nil end
+  local unspent = FA.Talents.Unspent()
+  local total = unspent and FA.Talents.Ready() and (FA.Talents.Spent() + unspent) or math.max(0, (UnitLevel("player") or 1) - FA.FirstLevel() + 1)
+  return math.min(#points, total)
 end
 
 --[[ Where a spec is on a build (the active spec without a view). Answers a table, or nil and why:
