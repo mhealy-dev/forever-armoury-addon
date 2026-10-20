@@ -77,8 +77,32 @@ end
 local STRIP_BACKDROP = { bgFile = BACKDROP.bgFile, edgeFile = BACKDROP.edgeFile, tile = true, tileSize = 32, edgeSize = 16,
   insets = { left = 5, right = 5, top = 5, bottom = 5 } }
 
+--[[ Spends a build's due points (the first `count` of them, else all): the points, all or none (FA.Apply), then a line in
+     chat and a redraw. The confirm's Spend and the strip's click both come here. ]]
+local function spend(build, count)
+  local ok, said = FA.Apply(build, count)
+  FA.Print(ok and ("Spent as " .. (build.name ~= "" and FA.Esc(build.name) or "the build") .. " says: " .. said .. ".") or said)
+  FA.Refresh()
+end
+
+--[[ What a click on a strip icon can do now: the points Apply would spend, or nil and why not (nil and nil for an icon
+     that isn't the next one, which has no click). The reasons are Apply's own. The icon's highlight shows only when
+     the click would work. ]]
+local function clickPlan(icon)
+  local e = icon.entry
+  local list, why
+  if e and e.kind == "next" and FA.ActiveBuild() then
+    local ok, combat = Talents.CanChange()
+    if Talents.Applying() then why = "That point is being applied."
+    elseif not ok then why = combat
+    else list, why = FA.PlanApply(FA.ActiveBuild()) end
+  end
+  icon.highlight:SetAlpha(list and 1 or 0)
+  return list, why
+end
+
 --[[ An icon's tooltip: the talent's spell as the game shows it (its name when the game gave no spell), then its level and
-     rank, and whether the rank is taken. ]]
+     rank, and whether the rank is taken; the next one ends with what a click does, or why it does nothing. ]]
 local function showTip(icon)
   local e = icon.entry
   if not e then return end
@@ -87,6 +111,13 @@ local function showTip(icon)
   if t.spell then GameTooltip:SetSpellByID(t.spell) else GameTooltip:SetText(t.name or "Unknown talent", 1, 1, 1) end
   GameTooltip:AddLine("Level " .. e.level .. " \194\183 Rank " .. e.rank .. " of " .. (t.max or "?"), 1, 0.82, 0)
   if e.kind == "taken" then GameTooltip:AddLine("Taken", 0.3, 1, 0.3) end
+  local list, why = clickPlan(icon)
+  if list then
+    GameTooltip:AddLine("Click to take it", 0.3, 1, 0.3)
+    if #list > 1 then GameTooltip:AddLine("Shift-click to take all " .. #list, 0.3, 1, 0.3) end
+  elseif why then
+    GameTooltip:AddLine(why, 1, 0.4, 0.4, true)
+  end
   GameTooltip:Show()
 end
 
@@ -119,6 +150,11 @@ local function makeIcon()
   icon.level:SetPoint("CENTER", icon.levelBg)
   icon.label = icon:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")   -- "Now" or "L25", under the next one
   icon.label:SetPoint("TOP", icon, "BOTTOM", 0, -1)
+  icon:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")   -- shown on the mouse over, and only when clickPlan says a click would work
+  icon.highlight = icon:GetHighlightTexture()
+  icon.highlight:SetBlendMode("ADD")
+  icon.highlight:SetAlpha(0)
+  icon:RegisterForClicks("LeftButtonUp")
   icon:SetScript("OnEnter", function(self)
     if not self.entry then return end
     hovering = self
@@ -130,7 +166,15 @@ local function makeIcon()
     lightHover(nil)
     GameTooltip:Hide()
   end)
-  --[[ Clicking the next icon is forever-armoury#1564, which waits on a decision: its OnClick would go here. ]]
+  --[[ The next icon takes its point: one click, and Apply's way (staged and committed together, all or none, rolled back
+       and said in chat if the game refuses); shift-click is Apply for every point due, through its confirm. A click that
+       can't do either does nothing, and the tooltip says why. While the commit casts the points are staged, so a second
+       click finds Applying true and is ignored. ]]
+  icon:SetScript("OnClick", function(self)
+    local list = clickPlan(self)
+    if not list then return end
+    if IsShiftKeyDown() then FA.AskApply() else spend(FA.ActiveBuild(), 1) end
+  end)
   return icon
 end
 
@@ -200,6 +244,7 @@ local function refreshStrip(p)
     icon.level:SetText(e.kind == "coming" and e.level or "")
     icon.label:SetShown(e.kind == "next")
     icon.label:SetText(e.kind == "next" and (e.now and "Now" or ("L" .. e.level)) or "")
+    clickPlan(icon)
     if e.kind == "coming" and entries[i - 1].kind ~= "coming" then y = y + 8 end   -- a gap after the next one
     icon:ClearAllPoints()
     icon:SetPoint("TOP", strip, "TOP", 0, -y)
@@ -356,10 +401,7 @@ StaticPopupDialogs["FOREVERARMOURY_APPLY"] = {
   text = "%s", button1 = "Spend", button2 = CANCEL or "Cancel",
   OnAccept = function(self, data)
     local build = data and FA.FindBuild(FA.class, data.id)
-    if not build then return end
-    local ok, said = FA.Apply(build)
-    FA.Print(ok and ("Spent as " .. (build.name ~= "" and FA.Esc(build.name) or "the build") .. " says: " .. said .. ".") or said)
-    FA.Refresh()
+    if build then spend(build) end
   end,
   timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
 }
