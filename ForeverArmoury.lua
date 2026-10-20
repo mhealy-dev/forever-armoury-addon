@@ -9,8 +9,11 @@
        GearCode.lua    a gear route code as the site writes it, read and written (FA.GearCode)
        Gear.lua        the saved gear routes, the character's, and the next pieces at its level (FA.Gear)
        GearUI.lua      the panel beside the character window listing them
+       LegacyCode.lua  a Legacy plan code as the site writes it, read and written (FA.LegacyCode)
+       Legacy.lua      the account's Legacy plans, where it is on one, and what Apply buys in the three Legacy trees (FA.Legacy)
+       LegacyUI.lua    the panel beside the game's Legacy window listing them
 
-     Saved variables: ForeverArmouryDB for the account (every build and gear route, by class, and the parts' switches)
+     Saved variables: ForeverArmouryDB for the account (every build and gear route, by class, every Legacy plan, and the parts' switches)
      and ForeverArmouryCharDB for the character (which build it follows, whether the panel's build list is open, and the
      spec it chose for its gear route). Besides the parts' switches the account has strip, the counts the strip shows. ]]
 
@@ -57,11 +60,12 @@ function FA.FirstLevel(build) return FA.FIRST_LEVEL - (FA.TalentedRank(build)) e
 FA.PARTS = {
   { key = "plan", name = "Level plan", text = "Your builds beside the talent window, with the next talent to take" },
   { key = "gear", name = "Leveling gear", text = "The site's gear route beside the character window: the pieces to get at your level, and where" },
+  { key = "legacy", name = "Legacy plans", text = "The site's Legacy plan beside the Legacy window: the perks still to buy, and Apply buying them" },
 }
 
 --[[ How many points the strip beside the talent window shows: the last ones taken, and the ones coming after the next. ]]
 FA.STRIP_MAX = { past = 5, coming = 8 }
-local DEFAULTS = { builds = {}, gear = {}, nextId = 1, parts = { plan = true, gear = true }, strip = { past = 3, coming = 5 } }
+local DEFAULTS = { builds = {}, gear = {}, legacy = {}, nextId = 1, parts = { plan = true, gear = true, legacy = true }, strip = { past = 3, coming = 5 } }
 
 function FA.Print(text)
   (DEFAULT_CHAT_FRAME or ChatFrame1):AddMessage("|cffffd100Forever Armoury:|r " .. tostring(text))
@@ -82,6 +86,7 @@ function FA.Init()
   local db = ForeverArmouryDB
   if type(db.builds) ~= "table" then db.builds = {} end
   if type(db.gear) ~= "table" then db.gear = {} end
+  if type(db.legacy) ~= "table" then db.legacy = {} end
   if type(db.nextId) ~= "number" then db.nextId = DEFAULTS.nextId end
   if type(db.parts) ~= "table" then db.parts = {} end
   for key, on in pairs(DEFAULTS.parts) do if db.parts[key] == nil then db.parts[key] = on end end
@@ -99,6 +104,15 @@ function FA.Init()
       FA.Print("Your saved builds were damaged: " .. table.concat(said, ", and ") .. ".")
     end
   end
+  if FA.Legacy then
+    local dropped, repaired = FA.Legacy.Repair()
+    if dropped > 0 or repaired > 0 then
+      local said = {}
+      if dropped > 0 then said[#said + 1] = "dropped " .. dropped .. (dropped == 1 and " saved Legacy plan" or " saved Legacy plans") .. " it couldn't read" end
+      if repaired > 0 then said[#said + 1] = "repaired " .. repaired .. (repaired == 1 and " saved Legacy plan" or " saved Legacy plans") .. " with a missing name, build or id" end
+      FA.Print("Your saved Legacy plans were damaged: " .. table.concat(said, ", and ") .. ".")
+    end
+  end
 end
 
 --[[ A strip count from the settings ("past" or "coming"), a whole number within what the strip has room for. ]]
@@ -111,6 +125,7 @@ function FA.SetPart(key, on)
   FA.db.parts[key] = on and true or false
   if FA.Refresh then FA.Refresh() end
   if FA.RefreshGear then FA.RefreshGear() end
+  if FA.RefreshLegacy then FA.RefreshLegacy() end
 end
 
 --[[ /fa: the panel, the import box, the switches. ]]
@@ -123,6 +138,8 @@ local HELP = {
   "/fa plan on|off  the level plan part",
   "/fa gear  the character window with your gear route beside it",
   "/fa gear on|off  the leveling gear part",
+  "/fa legacy  the Legacy window with your Legacy plan beside it",
+  "/fa legacy on|off  the Legacy plans part",
   "/fa options  the addon's settings",
   "/fa debug  every talent by tree, row and column, as the addon reads them from the game's positions",
 }
@@ -156,6 +173,12 @@ SlashCmdList.FOREVERARMOURY = function(msg)
     elseif on == "off" then FA.SetPart("gear", false); FA.Print("Leveling gear off.")
     elseif not FA.PartOn("gear") then FA.Print("The leveling gear part is off. /fa gear on turns it on.")
     elseif FA.ToggleGear then FA.ToggleGear() end
+  elseif cmd == "legacy" then
+    local on = rest:lower()
+    if on == "on" then FA.SetPart("legacy", true); FA.Print("Legacy plans on.")
+    elseif on == "off" then FA.SetPart("legacy", false); FA.Print("Legacy plans off.")
+    elseif not FA.PartOn("legacy") then FA.Print("The Legacy plans part is off. /fa legacy on turns it on.")
+    elseif FA.ToggleLegacy then FA.ToggleLegacy() end
   elseif cmd == "options" or cmd == "settings" then
     if FA.OpenOptions then FA.OpenOptions() end
   elseif cmd == "debug" then
@@ -200,12 +223,14 @@ function FA.RefreshSoon()
   if refreshing then return end
   if not (C_Timer and C_Timer.After) then
     if FA.Refresh then FA.Refresh() end
+    if FA.RefreshLegacy then FA.RefreshLegacy() end
     return
   end
   refreshing = true
   C_Timer.After(0, function()
     refreshing = false
     if FA.Refresh then FA.Refresh() end
+    if FA.RefreshLegacy then FA.RefreshLegacy() end
   end)
 end
 
@@ -221,7 +246,8 @@ events:RegisterEvent("PLAYER_LOGIN")
 events:SetScript("OnEvent", function(_, event, arg1)
   if event == "ADDON_LOADED" then
     if arg1 == ADDON then FA.Init()
-    elseif FA.Talents.Loaded(arg1) and FA.HookTalentFrame then FA.HookTalentFrame() end
+    elseif FA.Talents.Loaded(arg1) and FA.HookTalentFrame then FA.HookTalentFrame()
+    elseif FA.Legacy.Loaded(arg1) and FA.HookLegacyFrame then FA.HookLegacyFrame() end
   elseif event == "PLAYER_LOGIN" then
     for _, e in ipairs(EVENTS) do
       if not pcall(events.RegisterEvent, events, e) then FA.Print("The game has no event " .. e .. ", so the addon won't hear it.") end
@@ -229,14 +255,16 @@ events:SetScript("OnEvent", function(_, event, arg1)
     FA.HookWipe()
     if FA.HookTalentFrame then FA.HookTalentFrame() end
     if FA.HookCharacterFrame then FA.HookCharacterFrame() end
+    if FA.HookLegacyFrame then FA.HookLegacyFrame() end
     if FA.SetupOptions then FA.SetupOptions() end
   elseif event == "CONFIG_COMMIT_FAILED" then
     --[[ The commit is a cast, so the game can turn it down after CommitConfig said yes: what the addon staged is
          rolled back here. A commit of the window's own is the window's to report. ]]
     if FA.Talents.CommitFailed(arg1) then FA.Print("The game didn't apply the talents, so they were rolled back. Nothing was spent.") end
+    if FA.Legacy.CommitFailed(arg1) then FA.Print("The game didn't apply the Legacy perks, so they were rolled back. Nothing was bought.") end
     FA.RefreshSoon()
   else
-    if event == "TRAIT_CONFIG_UPDATED" then FA.Talents.Committed(arg1) end
+    if event == "TRAIT_CONFIG_UPDATED" then FA.Talents.Committed(arg1); FA.Legacy.Committed(arg1) end
     FA.RefreshSoon()
   end
 end)

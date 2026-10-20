@@ -117,6 +117,10 @@ local function gameBuild()
 end
 Code.GameBuild = gameBuild
 
+--[[ The name helpers a Legacy plan code shares (LegacyCode.lua): a plan's name is written and read as a build's. ]]
+Code.CleanName, Code.EncodeName, Code.DecodeName, Code.CutName, Code.TrimEnd = clean, encodeName, decodeName, cutName, trimEnd
+Code.MAX_NAME = MAX_NAME
+
 function Code.Points(picks)
   if type(picks) ~= "string" or #picks % 2 ~= 0 or #picks > 102 then return nil end
   local out = {}

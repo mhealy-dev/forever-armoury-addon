@@ -1,6 +1,6 @@
 ## Interface: 16001
 ## Title: Forever Armoury
-## Notes: Your Forever Armoury talent builds and leveling gear route in the game: paste them in and see what's next.
+## Notes: Your Forever Armoury talent builds, leveling gear route and Legacy plans in the game: paste them in and see what's next.
 ## Author: Forever Armoury
 ## Version: @project-version@
 ## SavedVariables: ForeverArmouryDB
@@ -17,3 +17,6 @@ TalentUI.lua
 GearCode.lua
 Gear.lua
 GearUI.lua
+LegacyCode.lua
+Legacy.lua
+LegacyUI.lua
