@@ -10,7 +10,8 @@ Copy the folder into `World of Warcraft\_forever_\Interface\AddOns\ForeverArmour
 
 ## Use
 
-- `/fa` opens the talent window, with the addon's panel beside it: your builds for this class, the one you follow marked, and its next talent named and lit in the trees. Click a build to follow it; the **x** beside it forgets it. With more than ten builds, the arrows under the list (or the mouse wheel over the panel) scroll it.
+- `/fa` opens the talent window, with the addon's panel beside it: your builds for this class, the one you follow marked, and its next talent named and lit in the trees. The builds are a section: the **Builds (N)** header opens and closes the list (closed, it names the build you follow; it opens by itself until you follow one, and the character keeps your choice). Click a build to follow it; the **x** beside it forgets it. With more than ten builds, the arrows under the list (or the mouse wheel over the panel) scroll it.
+- While you follow a build, a strip of icons sits between the talent window and the panel: the build's talents in its order, an icon for each rank (`r/m` on a talent with ranks). The last points you took are faded with a green check; the next has a gold border and the game's glow, with **Now** under it when you can spend it, else its level; the ones coming show the level they're due at; a **⋮** says more follow. Hover an icon to light that talent in the tree (in blue, beside the next talent's glow) and to see its tooltip, level and rank. The settings page picks how many taken and coming points it shows (3 and 5 to start).
 - **Import** (or `/fa import`) opens the box to paste a code into. One paste can hold every build of a class, or several codes, and a gear route code beside them.
 - **Export** (or `/fa export`) puts the code for every build of your class in the box, to paste into the site's Import box. Each build keeps the game build it was imported from, so builds from different game builds come out as a code each, one per line; the site reads them all from one paste.
 - **Apply** (or `/fa apply`) spends your unspent points as the build you follow says, in its order, after one confirm that names them. It's all or none: if the game refuses a point, or fails the commit, nothing is spent. The button says how many points it would spend, or why it can't (in combat, for one); it follows the fight as it starts and ends.
@@ -76,7 +77,7 @@ A client that still has the old API gets the same trees from it, so the rest of 
 - `BuildCode.lua`: the code, read and written.
 - `Talents.lua`: the game's talents as three trees of cells for either spec, spending points, and the talent window.
 - `Builds.lua`: the saved builds, the character's active one, where a spec is on it (`FA.Progress`), and what Apply and Swap do.
-- `TalentUI.lua`: the panel beside the talent window, the highlight, Apply's confirm, the import box, the settings page.
+- `TalentUI.lua`: the strip and the panel beside the talent window, the highlights, Apply's confirm, the import box, the settings page.
 - `GearCode.lua`: the gear route code, read and written.
 - `Gear.lua`: the saved gear routes, the character's route (its side and spec), what it wears and carries, and the next pieces at its level (`FA.Gear.Plan`).
 - `GearUI.lua`: the panel beside the character window.

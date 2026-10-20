@@ -5,13 +5,14 @@
        BuildCode.lua   a build code as the site writes it, read and written (FA.Code)
        Talents.lua     the game's talents as three trees of cells, and its talent window (FA.Talents)
        Builds.lua      the saved builds, the character's active one, and where it is on it (FA.Progress)
-       TalentUI.lua    the panel beside the talent window, the next-talent highlight, the import box, the settings
+       TalentUI.lua    the panel and the strip of icons beside the talent window, the highlights, the import box, the settings
        GearCode.lua    a gear route code as the site writes it, read and written (FA.GearCode)
        Gear.lua        the saved gear routes, the character's, and the next pieces at its level (FA.Gear)
        GearUI.lua      the panel beside the character window listing them
 
      Saved variables: ForeverArmouryDB for the account (every build and gear route, by class, and the parts' switches)
-     and ForeverArmouryCharDB for the character (which build it follows, and the spec it chose for its gear route). ]]
+     and ForeverArmouryCharDB for the character (which build it follows, whether the panel's build list is open, and the
+     spec it chose for its gear route). Besides the parts' switches the account has strip, the counts the strip shows. ]]
 
 local ADDON, FA = ...
 _G.ForeverArmoury = FA
@@ -58,7 +59,9 @@ FA.PARTS = {
   { key = "gear", name = "Leveling gear", text = "The site's gear route beside the character window: the pieces to get at your level, and where" },
 }
 
-local DEFAULTS = { builds = {}, gear = {}, nextId = 1, parts = { plan = true, gear = true } }
+--[[ How many points the strip beside the talent window shows: the last ones taken, and the ones coming after the next. ]]
+FA.STRIP_MAX = { past = 5, coming = 8 }
+local DEFAULTS = { builds = {}, gear = {}, nextId = 1, parts = { plan = true, gear = true }, strip = { past = 3, coming = 5 } }
 
 function FA.Print(text)
   (DEFAULT_CHAT_FRAME or ChatFrame1):AddMessage("|cffffd100Forever Armoury:|r " .. tostring(text))
@@ -82,6 +85,8 @@ function FA.Init()
   if type(db.nextId) ~= "number" then db.nextId = DEFAULTS.nextId end
   if type(db.parts) ~= "table" then db.parts = {} end
   for key, on in pairs(DEFAULTS.parts) do if db.parts[key] == nil then db.parts[key] = on end end
+  if type(db.strip) ~= "table" then db.strip = {} end
+  for key, n in pairs(DEFAULTS.strip) do if type(db.strip[key]) ~= "number" then db.strip[key] = n end end
   ForeverArmouryCharDB = ForeverArmouryCharDB or {}
   FA.db, FA.char = db, ForeverArmouryCharDB
   FA.SetClass()   -- not at PLAYER_LOGIN: an import before it needs the class
@@ -94,6 +99,11 @@ function FA.Init()
       FA.Print("Your saved builds were damaged: " .. table.concat(said, ", and ") .. ".")
     end
   end
+end
+
+--[[ A strip count from the settings ("past" or "coming"), a whole number within what the strip has room for. ]]
+function FA.StripCount(key)
+  return math.max(0, math.min(FA.STRIP_MAX[key], math.floor(FA.db.strip[key] + 0.5)))
 end
 
 function FA.PartOn(key) return FA.db and FA.db.parts[key] ~= false end
