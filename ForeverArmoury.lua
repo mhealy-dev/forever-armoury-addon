@@ -6,9 +6,12 @@
        Talents.lua     the game's talents as three trees of cells, and its talent window (FA.Talents)
        Builds.lua      the saved builds, the character's active one, and where it is on it (FA.Progress)
        TalentUI.lua    the panel beside the talent window, the next-talent highlight, the import box, the settings
+       GearCode.lua    a gear route code as the site writes it, read and written (FA.GearCode)
+       Gear.lua        the saved gear routes, the character's, and the next pieces at its level (FA.Gear)
+       GearUI.lua      the panel beside the character window listing them
 
-     Saved variables: ForeverArmouryDB for the account (every build, by class, and the parts' switches) and
-     ForeverArmouryCharDB for the character (which build it follows). ]]
+     Saved variables: ForeverArmouryDB for the account (every build and gear route, by class, and the parts' switches)
+     and ForeverArmouryCharDB for the character (which build it follows, and the spec it chose for its gear route). ]]
 
 local ADDON, FA = ...
 _G.ForeverArmoury = FA
@@ -36,13 +39,14 @@ function FA.TalentedRank()
 end
 function FA.FirstLevel() return FA.FIRST_LEVEL - FA.TalentedRank() end
 
---[[ The addon's parts, each with its own switch (FA.PartOn). The level plan is the first; macros and the UI layout
-     may follow. A part that is off draws nothing and hooks nothing it can avoid. ]]
+--[[ The addon's parts, each with its own switch (FA.PartOn). The level plan and the leveling gear are the first;
+     BIS lists, macros and the UI layout may follow. A part that is off draws nothing and hooks nothing it can avoid. ]]
 FA.PARTS = {
   { key = "plan", name = "Level plan", text = "Your builds beside the talent window, with the next talent to take" },
+  { key = "gear", name = "Leveling gear", text = "The site's gear route beside the character window: the pieces to get at your level, and where" },
 }
 
-local DEFAULTS = { builds = {}, nextId = 1, parts = { plan = true } }
+local DEFAULTS = { builds = {}, gear = {}, nextId = 1, parts = { plan = true, gear = true } }
 
 function FA.Print(text)
   (DEFAULT_CHAT_FRAME or ChatFrame1):AddMessage("|cffffd100Forever Armoury:|r " .. tostring(text))
@@ -53,6 +57,7 @@ function FA.Init()
   ForeverArmouryDB = ForeverArmouryDB or {}
   local db = ForeverArmouryDB
   if type(db.builds) ~= "table" then db.builds = {} end
+  if type(db.gear) ~= "table" then db.gear = {} end
   if type(db.nextId) ~= "number" then db.nextId = DEFAULTS.nextId end
   if type(db.parts) ~= "table" then db.parts = {} end
   for key, on in pairs(DEFAULTS.parts) do if db.parts[key] == nil then db.parts[key] = on end end
@@ -64,6 +69,7 @@ function FA.PartOn(key) return FA.db and FA.db.parts[key] ~= false end
 function FA.SetPart(key, on)
   FA.db.parts[key] = on and true or false
   if FA.Refresh then FA.Refresh() end
+  if FA.RefreshGear then FA.RefreshGear() end
 end
 
 --[[ /fa: the panel, the import box, the switches. ]]
@@ -74,6 +80,8 @@ local HELP = {
   "/fa export  the code for every build of your class, to paste into the site",
   "/fa list  your builds for this class",
   "/fa plan on|off  the level plan part",
+  "/fa gear  the character window with your gear route beside it",
+  "/fa gear on|off  the leveling gear part",
   "/fa options  the addon's settings",
   "/fa debug  every talent by tree, row and column, as the addon reads them from the game's positions",
 }
@@ -101,6 +109,12 @@ SlashCmdList.FOREVERARMOURY = function(msg)
     local on = rest:lower()
     if on == "on" then FA.SetPart("plan", true) elseif on == "off" then FA.SetPart("plan", false) else FA.SetPart("plan", not FA.PartOn("plan")) end
     FA.Print("Level plan " .. (FA.PartOn("plan") and "on" or "off") .. ".")
+  elseif cmd == "gear" then
+    local on = rest:lower()
+    if on == "on" then FA.SetPart("gear", true); FA.Print("Leveling gear on.")
+    elseif on == "off" then FA.SetPart("gear", false); FA.Print("Leveling gear off.")
+    elseif not FA.PartOn("gear") then FA.Print("The leveling gear part is off. /fa gear on turns it on.")
+    elseif FA.ToggleGear then FA.ToggleGear() end
   elseif cmd == "options" or cmd == "settings" then
     if FA.OpenOptions then FA.OpenOptions() end
   elseif cmd == "debug" then
@@ -128,6 +142,7 @@ events:SetScript("OnEvent", function(_, event, arg1)
       pcall(events.RegisterEvent, events, e)
     end
     if FA.HookTalentFrame then FA.HookTalentFrame() end
+    if FA.HookCharacterFrame then FA.HookCharacterFrame() end
     if FA.SetupOptions then FA.SetupOptions() end
   elseif event == "CONFIG_COMMIT_FAILED" then
     --[[ The commit is a cast, so the game can turn it down after CommitConfig said yes: what the addon staged is

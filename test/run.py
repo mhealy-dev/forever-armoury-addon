@@ -1,7 +1,8 @@
-"""Checks the addon's pure parts, BuildCode.lua, Talents.lua and Builds.lua, in a Lua runtime with the game's talent
-API stubbed: a build code read and written, the game's trait nodes turned into trees of cells, and the next-talent walk
-over a made-up talent tree. Run with `python test/run.py` (needs `pip install lupa`). The game's Lua is 5.1; LuaJIT's is
-used when lupa has it, else lupa's default."""
+"""Checks the addon's pure parts, BuildCode.lua, Talents.lua, Builds.lua, GearCode.lua and Gear.lua, in a Lua runtime
+with the game's talent, item and bag APIs stubbed: a build code and a gear route code read and written, the game's trait
+nodes turned into trees of cells, the next-talent walk over a made-up talent tree, and the next pieces of a gear route
+against what the character wears and carries. Run with `python test/run.py` (needs `pip install lupa`). The game's Lua
+is 5.1; LuaJIT's is used when lupa has it, else lupa's default."""
 import locale
 import os
 import sys
@@ -138,6 +139,20 @@ C_Spell = { GetSpellName = function(spellID) return NODES[spellID / 10].talent[1
 function UnitLevel() return PLAYER.level end
 function GetBuildInfo() return "1.60.1.70170", "70170", "Oct  2 2026", 16001 end   -- the build a code carries (#1215)
 function UnitClass() return "Warrior", PLAYER.class end
+-- the character's side, what it wears (EQUIPPED[slot] = item id) and carries (BAGS[bag][slot] = item id), and the items
+-- the game has loaded: ITEMS[id] = { name, equip location }; one it hasn't is nil from GetItemInfo, as in the game
+FACTION, EQUIPPED, BAGS, ITEMS = "Alliance", {}, {}, {}
+function UnitFactionGroup() return FACTION end
+function GetInventoryItemID(unit, slot) return EQUIPPED[slot] end
+C_Container = {
+  GetContainerNumSlots = function(bag) return BAGS[bag] and 16 or 0 end,
+  GetContainerItemID = function(bag, slot) return BAGS[bag] and BAGS[bag][slot] end,
+}
+function GetItemInfo(id)
+  local x = ITEMS[id]
+  if not x then return nil end
+  return x[1], "|cffffffff|Hitem:" .. id .. "::::::::60:::::|h[" .. x[1] .. "]|h|r", 1, 10, 10, "Armor", "Plate", 1, x[2]
+end
 -- the addon's event frame: ON_EVENT is its handler, for the tests to send it the game's events
 function CreateFrame() return { RegisterEvent = function() end, SetScript = function(_, k, fn) if k == "OnEvent" then ON_EVENT = fn end end } end
 function EVENT(name, ...) ON_EVENT(nil, name, ...) end
@@ -153,6 +168,8 @@ file("ForeverArmoury.lua")
 file("BuildCode.lua")
 file("Talents.lua")
 file("Builds.lua")
+file("GearCode.lua")
+file("Gear.lua")
 ForeverArmouryDB, ForeverArmouryCharDB = nil, nil
 FA.Init()
 FA.class = "warrior"
@@ -163,6 +180,7 @@ function RESET(api)
   NODES_FROM()
   STAGED, OTHER, LOG, PRINTED = {}, {}, {}, ""
   SPEC.active, SPEC.groups, COMBAT, FAIL_COMMIT, NO_ACTIVE, NO_CHANGE, TALENTED = 1, 1, false, false, false, false, 0
+  FACTION, EQUIPPED, BAGS, ITEMS = "Alliance", {}, {}, {}
 end
 -- a node's id by tree and talent index, for setting OTHER
 function NODE(tab, index) for id, n in pairs(NODES) do if n.tab == tab and n.talent == TREE[tab][index] then return id end end end
@@ -649,6 +667,238 @@ class Swap(unittest.TestCase):
         self.assertEqual(L.eval("FA.Talents.Spent()"), 0)
 
 
+# The first six pieces of the site's Arms warrior route for the Alliance (public/content/route/warrior.json), and the
+# whole route as the code the design note's encoder writes for it (docs/gear-route.md): four drops from The Hall of Thanes
+# (dungeon 3065), a quest two-hander, then a Deadmines drop.
+ROUTE = [(271097, 13, "back", ("drop", 3065, 3493)), (270231, 13, "hands", ("drop", 3065, 3495)), (270260, 13, "legs", ("drop", 3065, 3496)),
+         (270229, 13, "feet", ("drop", 3065, 3494)), (279895, 14, "mainhand", ("quest", 96393)), (273088, 17, "neck", ("drop", 43, 585))]
+ROUTE_CODE = "FAG1-warrior-0-alliance-18wxddd0Nr0Ul18izdgd0Nr0Un18j2did0Nr0Uo18ixdjd0Nr0Um1aOreoqp4J192Ehbd00H09r"
+WARRIOR_ARMS = ("FAG1-warrior-0-alliance-18wxddd0Nr0Ul18izdgd0Nr0Un18j2did0Nr0Uo18ixdjd0Nr0Um1aOreoqp4J192Ehbd00H09r02HJhed00A0Ij01Gchhd00H09s"
+                "1c4bhkd00A0Ih00iEhld00A0If01SCiod00A0Ih01paicd00H09r02HUjid00H09s01DQmdd00x0Iq01OXmfq0kz19bEmjd00x0Ip01DXnld00x0Im19ecocd00y0Is"
+                "01Noogd00M0Iz18fmsfq0jm01JRtod00L0IM01JQtad00L0IM19istbd01s0IH00o0ted00L0IO00Auvkd0330IP020vBad03307e02NMBcd0250IU054EBfd03307f"
+                "01MaCoq0gZ02GCDid03307e02sQJcd03n09G04CCJgq1Pz02tLJlq0IE04BINfd05D06V04BHNkd05D06V0338Qed03I03I033rQgd03I03R033dQjd03I03I037yRoq14y"
+                "03taWdd05j07O03u8Wfd05j07E03pYWhd03H0Nv04lSWid05j07O")
+
+
+def lua_route(pieces, cls="warrior", spec=0, side="alliance"):
+    """A route as a Lua table literal, pieces as ROUTE's tuples."""
+    out = []
+    for id_, level, slot, src in pieces:
+        out.append("{ id = %d, level = %d, slot = '%s', from = { %s } }" % (id_, level, slot, ", ".join("'%s'" % x if isinstance(x, str) else str(x) for x in src)))
+    return "{ cls = '%s', spec = %d, side = '%s', pieces = { %s } }" % (cls, spec, side, ", ".join(out))
+
+
+class GearCode(unittest.TestCase):
+    def read(self, text):
+        return L.eval("function(t) local r, e, n = FA.GearCode.Read(t); return r, e, n end")(text)
+
+    def routes(self, text):
+        r, e, n = self.read(text)
+        self.assertIsNone(e, text)
+        out = []
+        for route in r.values():
+            pieces = [(p.id, p.level, p.slot, tuple(p["from"].values())) for p in route.pieces.values()]
+            out.append((route.cls, route.spec, route.side, pieces))
+        return out, list(n.values())
+
+    def test_writes_and_reads_back(self):
+        code = L.eval("function(r) return FA.GearCode.Write(r) end")(L.eval(lua_route(ROUTE)))
+        self.assertEqual(code, ROUTE_CODE)
+        routes, notes = self.routes(code)
+        self.assertEqual(routes, [("warrior", 0, "alliance", ROUTE)])
+        self.assertEqual(notes, [])
+
+    def test_the_site_route_round_trips(self):
+        routes, _ = self.routes(WARRIOR_ARMS)
+        cls, spec, side, pieces = routes[0]
+        self.assertEqual((cls, spec, side, len(pieces)), ("warrior", 0, "alliance", 43))
+        self.assertEqual(pieces[:6], ROUTE)
+        self.assertEqual(pieces[-1], (16732, 58, "legs", ("drop", 329, 484)))   # Stratholme; Forever's own ids, above 270000 and 2900, are in ROUTE
+        self.assertEqual(L.eval("function(t) return FA.GearCode.Write((FA.GearCode.Read(t))[1]) end")(WARRIOR_ARMS), WARRIOR_ARMS)
+        self.assertLess(len(WARRIOR_ARMS), 700)
+
+    def test_every_slot_and_the_fields_edges(self):
+        slots = list(L.eval("FA.GearCode.SLOTS").values())
+        self.assertEqual(len(slots), 17)
+        pieces = [(14776335, 60, slot, ("quest", 238327)) for slot in slots] + [(1, 1, "head", ("drop", 1, 238327))]
+        code = L.eval("function(r) return FA.GearCode.Write(r) end")(L.eval(lua_route(pieces, "druid", 2, "horde")))
+        self.assertRegex(code, r"^FAG1-druid-2-horde-[0-9A-Za-z]+$")
+        self.assertEqual(code[len("FAG1-druid-2-horde-"):][:10], "ZZZZYaqZZZ")   # the biggest id, level 60, head, a quest
+        self.assertEqual(self.routes(code)[0], [("druid", 2, "horde", pieces)])
+
+    def test_several_codes_in_a_text(self):
+        two = ROUTE_CODE + " and FAG1-warrior-1-horde-18wxddd0Nr0Ul"
+        self.assertEqual([r[:3] for r in self.routes(two)[0]], [("warrior", 0, "alliance"), ("warrior", 1, "horde")])
+        for pasted in [two, "  " + two + "\n", "`" + two + "`", "here: " + two + ". Enjoy!", "<" + two + ">", "\"" + two + "\"", "**" + two + "**", two + "-"]:
+            self.assertEqual(len(self.routes(pasted)[0]), 2, pasted)
+        both = "FAT2-70170-warrior-A-0a " + ROUTE_CODE   # a build code beside it is left to the build reader
+        self.assertEqual(len(self.routes(both)[0]), 1)
+        self.assertTrue(L.eval("function(t) return FA.GearCode.Find(t) end")(both))
+        self.assertFalse(L.eval("function(t) return FA.GearCode.Find(t) end")("FAT2-70170-warrior-A-0a"))
+
+    def test_write_refuses_what_the_code_cant_carry(self):
+        write = L.eval("function(r) return FA.GearCode.Write(r) end")
+        for pieces, why in [([(14776336, 13, "back", ("drop", 1, 1))], "item id"), ([(5, 0, "back", ("drop", 1, 1))], "no level"),
+                            ([(5, 61, "back", ("drop", 1, 1))], "no level"), ([(5, 13, "tabard", ("drop", 1, 1))], "slot"),
+                            ([(5, 13, "back", ("vendor", 1))], "somewhere"), ([(5, 13, "back", ("drop", 238328, 1))], "source id")]:
+            code, err = write(L.eval(lua_route(pieces)))
+            self.assertIsNone(code, pieces)
+            self.assertIn(why, err)
+        self.assertIn("no class", write(L.eval("{ cls = 'knight', spec = 0, side = 'alliance', pieces = {} }"))[1])
+        self.assertIn("no spec", write(L.eval("{ cls = 'warrior', spec = 3, side = 'alliance', pieces = {} }"))[1])
+
+    def test_too_many_pieces_are_cut(self):
+        pieces = [(100 + i, 1 + i % 60, "back", ("quest", 7)) for i in range(125)]
+        code = L.eval("function(r) return FA.GearCode.Write(r) end")(L.eval(lua_route(pieces)))
+        routes, notes = self.routes(code)
+        self.assertEqual(len(routes[0][3]), 120)
+        self.assertEqual(notes, ["A route has 120 pieces at most, so the last 5 of route 1 were left out."])
+
+    def test_errors(self):
+        def say(text):
+            r, e, _ = self.read(text)
+            self.assertIsNone(r, text)
+            return e
+        self.assertIn("Paste a gear code", say(""))
+        self.assertIn("isn't a gear code", say("hello"))
+        self.assertIn("isn't a gear code", say("FAT2-70170-warrior-A-0a"))
+        self.assertIn("isn't a gear code", say("FAG0-warrior-0-alliance-18wxddd0Nr0Ul"))
+        self.assertIn("newer version", say("FAG2-warrior-0-alliance-18wxddd0Nr0Ul"))
+        for bad in ["FAG1-", "FAG1-warrior", "FAG1-warrior-0", "FAG1-knight-0-alliance-18wxddd0Nr0Ul", "FAG1-warrior-3-alliance-18wxddd0Nr0Ul",
+                    "FAG1-warrior-0-neutral-18wxddd0Nr0Ul", "FAG1-warrior-0-alliance-18wx.ddd"]:
+            self.assertRegex(say(bad), r"Route 1 .* doesn't read", bad)
+        self.assertEqual(say("FAG1-warrior-0-alliance-"), "Route 1 of that code has no pieces.")
+        for cut in ["FAG1-warrior-0-alliance-18wxddd0Nr0U", "FAG1-warrior-0-alliance-18wxd", "FAG1-warrior-0-alliance-18wxddd0Nr0Ul1aOreoqp4"]:
+            self.assertRegex(say(cut), r"Piece \d of route 1 .* cut off", cut)
+        self.assertRegex(say("FAG1-warrior-0-alliance-18wxddd0Nr0Ul1aOreoqp4J192Ehbd00H09"), r"Piece 3 of route 1 .* cut off")
+        for bad in ["FAG1-warrior-0-alliance-18wxdzd0Nr0Ul", "FAG1-warrior-0-alliance-18wxdxd0Nr0Ul", "FAG1-warrior-0-alliance-0000ddd0Nr0Ul", "FAG1-warrior-0-alliance-18wx0dd0Nr0Ul"]:
+            self.assertRegex(say(bad), r"Piece 1 of route 1 .* doesn't read", bad)   # a slot past q, a level past 60, item 0, level 0
+
+
+class Gear(unittest.TestCase):
+    def setUp(self):
+        L.run("RESET('traits')")
+
+    def add(self, text):
+        return L.eval("function(t) return FA.Gear.Add((assert(FA.GearCode.Read(t)))) end")(text)
+
+    def test_add_find_and_forget(self):
+        self.assertEqual(self.add(ROUTE_CODE + " FAG1-warrior-1-horde-18wxddd0Nr0Ul FAG1-mage-0-alliance-18wxddd0Nr0Ul"), (2, 1))
+        kept = L.eval("function() local out = {} for _, r in ipairs(FA.Gear.RoutesFor('warrior')) do out[#out + 1] = r.spec .. '/' .. r.side .. ':' .. #r.pieces end return table.concat(out, ' ') end")
+        self.assertEqual(kept(), "0/alliance:6 1/horde:1")
+        self.assertEqual(self.add("FAG1-warrior-0-alliance-18wxddd0Nr0Ul"), (1, 0))   # the same spec and side again replaces it
+        self.assertEqual(kept(), "0/alliance:1 1/horde:1")
+        self.assertTrue(L.eval("FA.Gear.Forget('warrior', 1, 'horde')"))
+        self.assertFalse(L.eval("FA.Gear.Forget('warrior', 1, 'horde')"))
+        self.assertEqual(kept(), "0/alliance:1")
+        self.assertEqual(L.eval("#FA.Gear.RoutesFor('mage')"), 1)
+
+    def test_the_spec_is_the_builds_heaviest_tree(self):
+        spec = L.eval("function(picks) return FA.Gear.BuildSpec({ picks = picks }) end")
+        self.assertEqual(spec("010101" + "1212"), 0)
+        self.assertEqual(spec("0101" + "121212" + "2b"), 1)
+        self.assertEqual(spec("2b2b2b"), 2)
+        self.assertIsNone(spec("0101" + "1212"))   # a tie
+        self.assertIsNone(spec(""))
+        self.assertIsNone(spec("zz"))
+        self.assertIsNone(L.eval("FA.Gear.BuildSpec(nil)"))
+        # the character's: the build it follows, or the one it chose
+        self.assertEqual(L.eval("function() return FA.Gear.Spec() end")(), (None, None))
+        L.run("FA.AddBuilds(assert(FA.Code.Read('FAT1-warrior-Fury-1212120101'))); FA.SetActive(1)")
+        self.assertEqual(L.eval("function() return FA.Gear.Spec() end")(), (1, "build"))
+        L.run("FA.Gear.SetSpec(2)")
+        self.assertEqual(L.eval("function() return FA.Gear.Spec() end")(), (2, "chosen"))
+        L.run("FA.Gear.SetSpec(nil)")
+        self.assertEqual(L.eval("function() return FA.Gear.Spec() end")(), (1, "build"))
+        self.assertEqual(L.eval("FA.Gear.SpecName(1)"), "Fury")
+        L.run("API = 'none'; FA.Talents.Forget()")
+        self.assertEqual(L.eval("FA.Gear.SpecName(1)"), "spec 2")
+        L.run("API = 'traits'; FA.Talents.Forget()")
+
+    def test_the_characters_route(self):
+        why = L.eval("function() local r, why = FA.Gear.Route(); return r and 'route' or why end")
+        self.assertIn("No gear route for this class yet", why())
+        self.add(ROUTE_CODE)
+        self.assertIn("Pick a spec", why())
+        L.run("FA.Gear.SetSpec(1)")
+        self.assertIn("No Fury route for Alliance here yet", why())
+        L.run("FA.Gear.SetSpec(0)")
+        self.assertEqual(why(), "route")
+        L.run("FACTION = 'Horde'")
+        self.assertIn("No Arms route for Horde", why())
+        L.run("FACTION = nil")
+        self.assertIn("hasn't said which side", why())
+        self.assertEqual(L.eval("FA.Gear.Side()"), None)
+        L.run("FACTION = 'Horde'")
+        self.assertEqual(L.eval("FA.Gear.Side()"), "horde")
+
+    def test_owned_is_what_is_worn_and_carried(self):
+        L.run("EQUIPPED = { [1] = 6686, [16] = 6687 }; BAGS = { [0] = { 1156, nil, 7003 }, [3] = { [16] = 2262 } }")
+        owned = L.eval("function() local out = {} for id in pairs(FA.Gear.Owned()) do out[#out + 1] = id end table.sort(out) return table.concat(out, ' ') end")
+        self.assertEqual(owned(), "1156 2262 6686 6687 7003")
+        L.run("EQUIPPED, BAGS = {}, {}")
+        self.assertEqual(owned(), "")
+
+    # A made-up route: two one-handers and a shield, then a two-hander at 20 that puts the shield away, a second shield at
+    # 23, and a head piece at 30
+    PLAN = [(11, 10, "mainhand", ("quest", 1)), (12, 12, "offhand", ("drop", 36, 2747)), (13, 15, "mainhand", ("drop", 36, 2745)),
+            (14, 20, "mainhand", ("quest", 2)), (15, 23, "offhand", ("quest", 3)), (16, 30, "head", ("drop", 43, 585))]
+
+    def plan(self, level):
+        return L.eval("function(route, level) local p = FA.Gear.Plan(route, level); local out = { worn = p.worn, had = p.had, get = {}, coming = {}, slots = {} } "
+                      "for i, x in ipairs(p.get) do out.get[i] = x.id end for i, x in ipairs(p.coming) do out.coming[i] = x.id end "
+                      "for slot, s in pairs(p.slots) do if s.now or s.next then out.slots[slot] = (s.now and s.now.id or '-') .. '/' .. (s.next and s.next.id or '-') .. (s.had and ' had' or '') end end return out end")(
+            L.eval(lua_route(self.PLAN)), level)
+
+    def slots(self, p):
+        return dict(p.slots.items())
+
+    def test_next_pieces_at_a_level(self):
+        L.run("ITEMS = { [14] = { 'Big Axe', 'INVTYPE_2HWEAPON' }, [11] = { 'Sword', 'INVTYPE_WEAPON' } }")
+        p = self.plan(9)
+        self.assertEqual((p.worn, p.had, list(p.get.values()), list(p.coming.values())), (0, 0, [], [11, 12, 13, 14, 15, 16]))
+        self.assertEqual(self.slots(p), {"mainhand": "-/11", "offhand": "-/12", "head": "-/16"})
+        p = self.plan(12)
+        self.assertEqual(self.slots(p), {"mainhand": "11/13", "offhand": "12/15", "head": "-/16"})
+        self.assertEqual((list(p.get.values()), list(p.coming.values()), p.worn), ([11, 12], [13, 14, 15, 16], 2))
+        p = self.plan(15)
+        self.assertEqual(self.slots(p)["mainhand"], "13/14")
+        # the two-hander at 20 puts the shield away, until the next shield at 23
+        p = self.plan(21)
+        self.assertEqual(self.slots(p), {"mainhand": "14/-", "offhand": "-/15", "head": "-/16"})
+        self.assertEqual((list(p.get.values()), p.worn), ([14], 1))
+        p = self.plan(23)
+        self.assertEqual(self.slots(p), {"mainhand": "14/-", "offhand": "15/-", "head": "-/16"})
+        p = self.plan(60)
+        self.assertEqual(self.slots(p), {"mainhand": "14/-", "offhand": "15/-", "head": "16/-"})
+        self.assertEqual((list(p.get.values()), list(p.coming.values())), ([14, 15, 16], []))
+        # a main hand the game hasn't loaded yet counts as one-handed, so the shield shows
+        L.run("ITEMS = {}")
+        self.assertEqual(self.slots(self.plan(21))["offhand"], "12/15")
+
+    def test_had_is_worn_or_carried(self):
+        L.run("ITEMS = { [14] = { 'Big Axe', 'INVTYPE_2HWEAPON' } }; EQUIPPED = { [16] = 14 }; BAGS = { [0] = { 16 } }")
+        p = self.plan(60)
+        self.assertEqual(self.slots(p), {"mainhand": "14/- had", "offhand": "15/-", "head": "16/- had"})
+        self.assertEqual((p.worn, p.had, list(p.get.values())), (3, 2, [15]))
+        # the sets can be given, as the panel's tests do
+        given = L.eval("function(route) local p = FA.Gear.Plan(route, 60, { [15] = true }, function() return false end); return p.had, p.slots.offhand.had, p.slots.mainhand.had end")(L.eval(lua_route(self.PLAN)))
+        self.assertEqual(given, (1, True, False))
+
+    def test_where_a_piece_comes_from(self):
+        text = L.eval("function(p, names) return FA.Gear.SourceText(p, names) end")
+        drop = L.eval("{ from = { 'drop', 36, 2747 } }")
+        quest = L.eval("{ from = { 'quest', 1275 } }")
+        names = L.eval("{ dungeon = function(id) return id == 36 and 'Deadmines' or nil end, npc = function(id) return id == 2747 and 'Edwin VanCleef' or nil end, quest = function(id) return 'The Defias Brotherhood' end }")
+        self.assertEqual(text(drop, names), "Deadmines: Edwin VanCleef")
+        self.assertEqual(text(quest, names), "Quest: The Defias Brotherhood")
+        self.assertEqual(text(L.eval("{ from = { 'drop', 3065, 3493 } }"), names), "dungeon 3065: NPC 3493")
+        # without the game's names (none of its lookups here), the ids
+        self.assertEqual(text(drop, None), "dungeon 36: NPC 2747")
+        self.assertEqual(text(quest, None), "Quest: #1275")
+        self.assertEqual(text(L.eval("{ from = { 'vendor', 1 } }"), None), "?")
+
+
 UI_STUB = r"""
 -- Any frame: every method answers a new frame, except the few whose answers get used as numbers, text or flags.
 local ANSWERS = { GetFrameLevel = 1, IsShown = true, GetWidth = 400, GetText = "", GetChecked = true, GetID = 1 }
@@ -676,21 +926,24 @@ PlayerSpellsFrame = frame("PlayerSpellsFrame")
 PlayerSpellsFrame.TalentsFrame = frame("TalentsFrame")
 PlayerSpellsFrame.TalentsFrame.GetTalentButtonByNodeID = function(self, nodeID) LIT = nodeID; return frame() end
 Settings = { RegisterCanvasLayoutCategory = function() return frame() end, RegisterAddOnCategory = function() end, OpenToCategory = function() end }
+CharacterFrame = frame("CharacterFrame")
+ToggleCharacter = function() TOGGLED = (TOGGLED or 0) + 1 end
 """
 
 
 class UI(unittest.TestCase):
-    """TalentUI.lua run against a mock of the frame API: every path draws without a Lua error."""
+    """TalentUI.lua and GearUI.lua run against a mock of the frame API: every path draws without a Lua error."""
 
     @classmethod
     def setUpClass(cls):
         L.run("RESET('traits')")
         L.run(UI_STUB)
-        L.run("""
-          local f = assert(io.open(ROOT .. '/TalentUI.lua', 'rb')); local src = f:read('*a'); f:close()
-          assert((loadstring or load)(src, '@TalentUI.lua'))('ForeverArmoury', FA)
-        """)
-        L.run("FA.HookTalentFrame(); FA.SetupOptions()")
+        for name in ("TalentUI.lua", "GearUI.lua"):
+            L.run("""
+              local f = assert(io.open(ROOT .. '/%s', 'rb')); local src = f:read('*a'); f:close()
+              assert((loadstring or load)(src, '@%s'))('ForeverArmoury', FA)
+            """ % (name, name))
+        L.run("FA.HookTalentFrame(); FA.HookCharacterFrame(); FA.SetupOptions()")
 
     def setUp(self):
         L.run("RESET('traits'); POPUPS = {}; LIT = nil")
@@ -746,8 +999,80 @@ class UI(unittest.TestCase):
         self.assertTrue(L.eval("ForeverArmouryTalentPanel.shown"))
 
     def test_slash_commands_run(self):
-        for cmd in ["", "help", "list", "export", "import", "apply", "plan off", "plan on", "options", "debug"]:
+        for cmd in ["", "help", "list", "export", "import", "apply", "plan off", "plan on", "gear", "gear off", "gear", "gear on", "options", "debug"]:
             L.eval("function(c) SlashCmdList.FOREVERARMOURY(c) end")(cmd)
+        self.assertIn("Leveling gear off.", L.eval("PRINTED"))
+        self.assertIn("The leveling gear part is off.", L.eval("PRINTED"))
+        self.assertEqual(L.eval("TOGGLED"), 1)   # the second /fa gear found the part off
+
+    # ---- the gear panel
+    def gear(self):
+        return L.eval("function() local p = ForeverArmouryGearPanel; local rows = {} for i, r in ipairs(p.rows) do if r.shown then rows[i] = (r.slot.text or '') .. ' ' .. (r.item.text or '') .. ' ' .. (r.state.text or '') .. ' | ' .. (r.from.text or '') end end "
+                      "return p.shown, p.status.text, p.spec.text, rows end")()
+
+    def test_gear_panel_without_a_route(self):
+        L.run("FA.RefreshGear()")
+        shown, status, spec, rows = self.gear()
+        self.assertTrue(shown)
+        self.assertIn("No gear route for this class yet", status)
+        self.assertEqual(spec, "Pick a spec")
+        self.assertEqual(len(rows), 0)
+
+    def test_one_paste_imports_a_build_and_a_route(self):
+        ok, said = L.eval("function(t) return FA.ImportText(t) end")("FAT1-warrior-Arms-" + GATED + "\n" + ROUTE_CODE)
+        self.assertTrue(ok)
+        self.assertEqual(said, "1 Warrior build imported. Following Arms. 1 Warrior gear route imported.")   # the build followed first, so the route has its spec
+        L.run("PLAYER.level = 14; ITEMS = { [271097] = { 'Spiritwraith Drape', 'INVTYPE_CLOAK' }, [279895] = { 'Ironforge Greathammer', 'INVTYPE_2HWEAPON' } }; "
+              "EQUIPPED = { [15] = 271097 }; FA.RefreshGear()")
+        shown, status, spec, rows = self.gear()
+        self.assertEqual(spec, "Build: Arms")
+        self.assertIn("Arms, Alliance, level 14: 1 of 5 pieces of your level had.", status)
+        self.assertIn("To get now, then what's coming:", status)
+        rows = [rows[i] for i in sorted(rows.keys())]
+        self.assertEqual(len(rows), 5)   # four to get, one coming
+        self.assertEqual(rows[0], "Hands |cff808080item 270231|r |cffff8080get|r | dungeon 3065: NPC 3495")   # not loaded yet: its id
+        self.assertIn("Main hand |cffffffff|Hitem:279895::::::::60:::::|h[Ironforge Greathammer]|h|r |cffff8080get|r | Quest: #96393", rows)
+        self.assertEqual(rows[4], "Neck |cff808080item 273088|r at 17 | dungeon 43: NPC 585")
+        # with everything of its level had, and at 60 with the whole route
+        L.run("EQUIPPED = { [15] = 271097, [10] = 270231, [7] = 270260, [8] = 270229, [16] = 279895 }; FA.RefreshGear()")
+        self.assertIn("Nothing to get at this level. Coming next:", self.gear()[1])
+        L.run("PLAYER.level = 60; BAGS = { [0] = { 273088 } }; FA.RefreshGear()")
+        self.assertIn("Every piece of the route is yours.", self.gear()[1])
+        self.assertEqual(len(self.gear()[3]), 0)
+
+    def test_the_spec_button_cycles_and_the_part_switch_hides_the_panel(self):
+        L.run("FA.ImportText('" + ROUTE_CODE + "')")
+        self.assertIn("Follow a build, or pick the route's spec", L.eval("PRINTED"))
+        self.assertEqual(self.gear()[2], "Pick a spec")
+        press = L.eval("function() FA.CycleGearSpec(); return ForeverArmouryGearPanel.spec.text, ForeverArmouryGearPanel.status.text end")
+        self.assertEqual(press()[0], "Spec: Arms")
+        self.assertIn("Arms, Alliance, level 60", self.gear()[1])
+        self.assertEqual(press()[0], "Spec: Fury")
+        self.assertIn("No Fury route for Alliance here yet", self.gear()[1])
+        self.assertEqual(press()[0], "Spec: Protection")
+        self.assertEqual(press()[0], "Pick a spec")
+        L.run("FA.SetPart('gear', false)")
+        self.assertFalse(L.eval("ForeverArmouryGearPanel.shown"))
+        L.run("FA.SetPart('gear', true)")
+        self.assertTrue(L.eval("ForeverArmouryGearPanel.shown"))
+        L.run("CharacterFrame.IsShown = function() return false end; FA.RefreshGear()")
+        self.assertFalse(L.eval("ForeverArmouryGearPanel.shown"))
+        L.run("CharacterFrame.IsShown = nil; FA.RefreshGear()")
+        self.assertTrue(L.eval("ForeverArmouryGearPanel.shown"))
+
+    def test_import_errors_name_the_code_pasted(self):
+        imp = L.eval("function(t) return FA.ImportText(t) end")
+        self.assertIn("isn't a build code", imp("nonsense")[1])
+        self.assertIn("Route 1 of that code doesn't read", imp("FAG1-warrior-0")[1])
+        self.assertIn("Build 1 of that code doesn't read", imp("FAT2-70170-warrior-A-0a0 FAG1-warrior-0")[1])   # both broken: the build code's error
+        ok, said = imp("FAT1-warrior-Arms-0101 FAG1-warrior-0")   # the build reads, the route doesn't: both said
+        self.assertTrue(ok)
+        self.assertIn("1 Warrior build imported.", said)
+        self.assertIn("Route 1 of that code doesn't read", said)
+        ok, said = imp("FAT1-warrior-Arms-0z " + ROUTE_CODE)
+        self.assertTrue(ok)
+        self.assertIn("1 Warrior gear route imported.", said)
+        self.assertIn("Build 1 of that code doesn't read", said)
 
 
 if __name__ == "__main__":
