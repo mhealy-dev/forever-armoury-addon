@@ -9,9 +9,12 @@ local Talents = FA.Talents
 local BACKDROP = { bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background", edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
   tile = true, tileSize = 32, edgeSize = 32, insets = { left = 11, right = 12, top = 12, bottom = 11 } }
 local TEMPLATE = BackdropTemplateMixin and "BackdropTemplate" or nil
-local ROWS = 10
+local ROWS = 10    -- rows the list shows at once; more builds than that scroll (FA.ScrollBuilds)
 local panel, importBox, options, hooked
 local glows = {}   -- talent button -> its highlight
+
+--[[ A build's name as the panel and chat draw it: escaped (FA.Escape), so a | in it is a pipe and not a colour. ]]
+local function shownName(b, none) return b.name ~= "" and FA.Escape(b.name) or none end
 
 --[[ ---- the next-talent highlight ---- ]]
 local function lightTalent(t)
@@ -101,10 +104,31 @@ local function makePanel()
     row.forget:SetPoint("LEFT", row, "RIGHT", 0, 0)
     row.forget:SetScript("OnClick", function(self)
       local b = self:GetParent().build
-      if b then StaticPopup_Show("FOREVERARMOURY_FORGET", b.name, nil, { cls = FA.class, id = b.id }) end
+      if b then StaticPopup_Show("FOREVERARMOURY_FORGET", shownName(b, "Unnamed"), nil, { cls = FA.class, id = b.id }) end
     end)
     panel.rows[i] = row
   end
+
+  --[[ The list's scroll, for more builds than rows: an up and a down button with "1-10 of 12" between them, under the
+       rows, and the mouse wheel over the panel. Hidden with ROWS builds or fewer. ]]
+  panel.offset = 0
+  panel.pager = CreateFrame("Frame", nil, panel)
+  panel.pager:SetSize(178, 20)
+  panel.pager:SetPoint("TOPLEFT", 16, -132 - ROWS * 21 - 2)
+  panel.pager.up = CreateFrame("Button", nil, panel.pager, "UIPanelScrollUpButtonTemplate")
+  panel.pager.up:SetSize(18, 18)
+  panel.pager.up:SetPoint("LEFT", 0, 0)
+  panel.pager.up:SetScript("OnClick", function() FA.ScrollBuilds(-1) end)
+  panel.pager.down = CreateFrame("Button", nil, panel.pager, "UIPanelScrollDownButtonTemplate")
+  panel.pager.down:SetSize(18, 18)
+  panel.pager.down:SetPoint("RIGHT", 0, 0)
+  panel.pager.down:SetScript("OnClick", function() FA.ScrollBuilds(1) end)
+  panel.pager.text = panel.pager:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  panel.pager.text:SetPoint("LEFT", panel.pager.up, "RIGHT", 4, 0)
+  panel.pager.text:SetPoint("RIGHT", panel.pager.down, "LEFT", -4, 0)
+  panel.pager.text:SetJustifyH("CENTER")
+  panel:EnableMouseWheel(true)
+  panel:SetScript("OnMouseWheel", function(_, delta) FA.ScrollBuilds(delta > 0 and -1 or 1) end)
 
   local import = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
   import:SetSize(84, 22)
@@ -133,7 +157,7 @@ StaticPopupDialogs["FOREVERARMOURY_APPLY"] = {
     local build = data and FA.FindBuild(FA.class, data.id)
     if not build then return end
     local ok, said = FA.Apply(build)
-    FA.Print(ok and ("Spent as " .. (build.name ~= "" and build.name or "the build") .. " says: " .. said .. ".") or said)
+    FA.Print(ok and ("Spent as " .. shownName(build, "the build") .. " says: " .. said .. ".") or said)
     FA.Refresh()
   end,
   timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
@@ -148,7 +172,7 @@ function FA.AskApply()
   if ok then list, why = FA.PlanApply(build) end
   if not list then FA.Print(why); return end
   StaticPopup_Show("FOREVERARMOURY_APPLY", "Spend " .. #list .. (#list == 1 and " point" or " points") .. " as " ..
-    (build.name ~= "" and build.name or "the build") .. " says?\n\n" .. FA.Summary(list, 8), nil, { id = build.id })
+    shownName(build, "the build") .. " says?\n\n" .. FA.Summary(list, 8), nil, { id = build.id })
 end
 
 --[[ What the panel says about the active build: its next point, or why there isn't one, and what it takes to swap. ]]
@@ -186,16 +210,26 @@ function FA.Refresh()
   end
   panel:Show()
   local list, active = FA.BuildsFor(FA.class), FA.ActiveBuild()
+  local last = math.max(0, #list - ROWS)   -- the furthest the list scrolls
+  if panel.offset > last then panel.offset = last end
   for i, row in ipairs(panel.rows) do
-    local b = list[i]
+    local b = list[panel.offset + i]
     row.build = b
     if b then
-      row.text:SetText(b.name ~= "" and b.name or "Unnamed")
+      row.text:SetText(shownName(b, "Unnamed"))
       row.mark:SetShown(active == b)
       row:Show()
     else
       row:Hide()
     end
+  end
+  if last > 0 then
+    panel.pager.text:SetText((panel.offset + 1) .. "-" .. math.min(panel.offset + ROWS, #list) .. " of " .. #list)
+    if panel.offset > 0 then panel.pager.up:Enable() else panel.pager.up:Disable() end
+    if panel.offset < last then panel.pager.down:Enable() else panel.pager.down:Disable() end
+    panel.pager:Show()
+  else
+    panel.pager:Hide()
   end
   if #list == 0 then
     panel.status:SetText("No builds for this class yet. On the site, Copy for addon, then Import here.")
@@ -216,7 +250,15 @@ function FA.Refresh()
   end
 end
 
---[[ Once Blizzard's talent UI is in: the panel on its window, and a refresh whenever it shows, hides or redraws. ]]
+--[[ Scrolls the build list by a number of rows (negative is up), and redraws; the list keeps within its builds. ]]
+function FA.ScrollBuilds(rows)
+  if not panel then return end
+  panel.offset = math.max(0, math.min(panel.offset + rows, #FA.BuildsFor(FA.class) - ROWS))
+  FA.Refresh()
+end
+
+--[[ Once Blizzard's talent UI is in: the panel on its window, and a refresh whenever it shows, hides or redraws (the
+     window's own redraws come in bursts, so they queue one, as the game's events do). ]]
 function FA.HookTalentFrame()
   if hooked then return end
   local f = Talents.Frame()
@@ -225,8 +267,8 @@ function FA.HookTalentFrame()
   makePanel()
   f:HookScript("OnShow", FA.Refresh)
   f:HookScript("OnHide", FA.Refresh)
-  if f.LoadTalentTreeInternal then hooksecurefunc(f, "LoadTalentTreeInternal", function() Talents.Forget(); FA.Refresh() end) end
-  if f.OnTraitConfigUpdated then hooksecurefunc(f, "OnTraitConfigUpdated", function() Talents.Forget(); FA.Refresh() end) end
+  if f.LoadTalentTreeInternal then hooksecurefunc(f, "LoadTalentTreeInternal", function() FA.QueueRefresh(true) end) end
+  if f.OnTraitConfigUpdated then hooksecurefunc(f, "OnTraitConfigUpdated", function() FA.QueueRefresh(true) end) end
   if TalentFrame_Update then hooksecurefunc("TalentFrame_Update", FA.Refresh) end
   FA.Refresh()
 end
@@ -328,7 +370,7 @@ function FA.ImportText(text)
     --[[ A character with one build and none followed follows it, so the first paste lights a talent straight away. ]]
     if mine > 0 and not FA.ActiveBuild() then
       local list = FA.BuildsFor(FA.class)
-      if #list == 1 then FA.SetActive(list[1].id); said = said .. " Following " .. list[1].name .. "." end
+      if #list == 1 then FA.SetActive(list[1].id); said = said .. " Following " .. shownName(list[1], "it") .. "." end
     end
   end
   if routes then

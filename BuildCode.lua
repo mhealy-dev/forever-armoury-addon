@@ -26,24 +26,76 @@
      Version 1 had no build: FAT1-<class>-<name>-<picks>{.<class>-<name>-<picks>}.
 
      Letters and digits are spelt out as A-Z, a-z and 0-9 rather than %w, which follows the locale: under a UTF-8 one
-     it takes bytes above 127 for letters, and a name would pass them through unencoded. ]]
+     it takes bytes above 127 for letters, and a name would pass them through unencoded; whitespace likewise, as
+     SPACES, rather than %s. The reader keeps to the site's (forever-armoury#1539): a name is cut to MAX_NAME
+     characters with a note, a name whose bytes aren't UTF-8 is refused, a code's version has three digits at most
+     and its build eight, and a run of full stops after a code is cut back byte by byte, not with a pattern that
+     tries every run (the site's #926). ]]
 
 local _, FA = ...
 local Code = {}
 FA.Code = Code
 
 Code.VERSION = 2
+Code.MAX_NAME = 40
+local MAX_NAME = Code.MAX_NAME
 local CLASSES = { warrior = true, paladin = true, hunter = true, rogue = true, priest = true, shaman = true, mage = true, warlock = true, druid = true }
 --[[ a code in a pasted text: its start, and everything after it that a code is made of ]]
-local FIND = "FAT%d+%-[A-Za-z0-9%%%.%-]*"
+local FIND = "FAT%d%d?%d?%-[A-Za-z0-9%%%.%-]*"
 local NOT_A_CODE = "That isn't a build code. A build code starts with FAT2- (or FAT1-, from before)."
 
-local function clean(name) return (tostring(name or ""):gsub("%s+", " "):match("^%s*(.-)%s*$")) end
+--[[ Whitespace as the site's \s has it: the ASCII kinds, then Unicode's, each as its UTF-8 bytes (no-break space,
+     the ogham mark, the en quad to the hair space, the line and paragraph separators, the narrow no-break and the
+     medium mathematical space, the ideographic space, and the byte order mark). ]]
+local SPACES = { "[ \t\n\v\f\r]", "\194\160", "\225\154\128", "\226\128[\128-\138]", "\226\128\168", "\226\128\169", "\226\128\175",
+  "\226\129\159", "\227\128\128", "\239\187\191" }
+--[[ The name with its whitespace of every kind collapsed to single spaces and none at either end. ]]
+local function clean(name)
+  name = tostring(name or "")
+  for _, pattern in ipairs(SPACES) do name = name:gsub(pattern, " ") end
+  return (name:gsub("  +", " "):match("^ *(.-) *$"))
+end
+--[[ The first n characters of a UTF-8 string (a character being a lead byte and its continuation bytes). ]]
+local function firstChars(s, n)
+  local count, cut = 0, #s
+  for pos in s:gmatch("()[^\128-\191]") do
+    count = count + 1
+    if count > n then cut = pos - 1; break end
+  end
+  return s:sub(1, cut), count > n
+end
+--[[ Whether every byte of s is part of a well-formed UTF-8 character: one byte under 128, or a lead byte followed by
+     its continuation bytes, with overlong forms, surrogates and anything past U+10FFFF refused, as a browser's
+     decodeURIComponent refuses them. ]]
+local function utf8(s)
+  local i, n = 1, #s
+  while i <= n do
+    local c = s:byte(i)
+    local len, min
+    if c < 0x80 then len, min = 1, 0
+    elseif c >= 0xC2 and c <= 0xDF then len, min = 2, 0x80
+    elseif c >= 0xE0 and c <= 0xEF then len, min = 3, 0x800
+    elseif c >= 0xF0 and c <= 0xF4 then len, min = 4, 0x10000
+    else return false end
+    if i + len - 1 > n then return false end
+    local code = len == 1 and c or (c % (2 ^ (7 - len)))
+    for j = i + 1, i + len - 1 do
+      local b = s:byte(j)
+      if b < 0x80 or b > 0xBF then return false end
+      code = code * 64 + (b - 0x80)
+    end
+    if code < min or code > 0x10FFFF or (code >= 0xD800 and code <= 0xDFFF) then return false end
+    i = i + len
+  end
+  return true
+end
 local function encodeName(name) return (name:gsub("[^A-Za-z0-9]", function(c) return string.format("%%%02X", c:byte()) end)) end
---[[ The name as text, or nil when it isn't a name (a broken or cut-off %XX). ]]
+--[[ The name as text, or nil when it isn't a name (a broken or cut-off %XX, or bytes that aren't UTF-8). ]]
 local function decodeName(s)
   for pos in s:gmatch("()%%") do if not s:sub(pos + 1, pos + 2):match("^%x%x$") then return nil end end
-  return (s:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end))
+  local name = s:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
+  if not utf8(name) then return nil end
+  return name
 end
 --[[ The game's build number, as the code carries it: 0 outside the game (the tests stub GetBuildInfo). ]]
 local function gameBuild()
@@ -65,7 +117,7 @@ end
 
 function Code.Write(builds, build)
   local parts = {}
-  for i, b in ipairs(builds) do parts[i] = b.cls .. "-" .. encodeName(clean(b.name)) .. "-" .. (b.picks or "") end
+  for i, b in ipairs(builds) do parts[i] = b.cls .. "-" .. encodeName(clean(firstChars(clean(b.name), MAX_NAME))) .. "-" .. (b.picks or "") end
   if build == false then return "FAT1-" .. table.concat(parts, ".") end
   return "FAT" .. Code.VERSION .. "-" .. (build or gameBuild()) .. "-" .. table.concat(parts, ".")
 end
@@ -82,14 +134,19 @@ local function read1(body, out, build)
     name = decodeName(name)
     if not name then return "The name of build " .. n .. " in that code is cut off or changed. Copy the whole code again." end
     if picks == "" then out.empty = out.empty + 1
-    else out.builds[#out.builds + 1] = { cls = cls, name = clean(name), picks = picks, build = build } end
+    else
+      local cut
+      name, cut = firstChars(clean(name), MAX_NAME)
+      if cut then name = clean(name); out.notes[#out.notes + 1] = "The name of build " .. n .. " was cut to " .. MAX_NAME .. " characters." end
+      out.builds[#out.builds + 1] = { cls = cls, name = name, picks = picks, build = build }
+    end
   end
   return nil
 end
---[[ Version 2: <build>-, then as version 1. ]]
+--[[ Version 2: <build>- (eight digits at most), then as version 1. ]]
 local function read2(body, out)
   local build, rest = body:match("^(%d+)%-(.*)$")
-  if not build then return "That code doesn't read. It may be cut off: copy the whole code again." end
+  if not build or #build > 8 then return "That code doesn't read. It may be cut off: copy the whole code again." end
   return read1(rest, out, tonumber(build))
 end
 local READERS = { [1] = read1, [2] = read2 }
@@ -106,8 +163,12 @@ function Code.Read(text)
       if version > Code.VERSION then return nil, "That code is from a newer version of Forever Armoury than this addon. Update the addon and try again." end
       return nil, NOT_A_CODE
     end
-    --[[ a sentence's full stop after the code isn't part of it ]]
-    local body = m:gsub("^FAT%d+%-", ""):gsub("%.+$", "")
+    --[[ a sentence's full stops after the code aren't part of it: counted back from the end, since a pattern for a
+         run of them at the end tries every run in the code first ]]
+    local body = m:gsub("^FAT%d+%-", "")
+    local last = #body
+    while last > 0 and body:byte(last) == 46 do last = last - 1 end
+    body = body:sub(1, last)
     local err = reader(body, out)
     if err then return nil, err end
   end

@@ -1,7 +1,8 @@
 """Checks the addon's pure parts, BuildCode.lua, Talents.lua, Builds.lua, GearCode.lua and Gear.lua, in a Lua runtime
 with the game's talent, item and bag APIs stubbed: a build code and a gear route code read and written, the game's trait
-nodes turned into trees of cells, the next-talent walk over a made-up talent tree, and the next pieces of a gear route
-against what the character wears and carries. Run with `python test/run.py` (needs `pip install lupa`). The game's Lua
+nodes turned into trees of cells, the next-talent walk over a made-up talent tree, the events (refreshes gathered a frame
+at a time, by a stub of C_Timer the tests tick), and the next pieces of a gear route against what the character wears
+and carries. Run with `python test/run.py` (needs `pip install lupa`). The game's Lua
 is 5.1; LuaJIT's is used when lupa has it, else lupa's default."""
 import locale
 import os
@@ -153,9 +154,18 @@ function GetItemInfo(id)
   if not x then return nil end
   return x[1], "|cffffffff|Hitem:" .. id .. "::::::::60:::::|h[" .. x[1] .. "]|h|r", 1, 10, 10, "Armor", "Plate", 1, x[2]
 end
--- the addon's event frame: ON_EVENT is its handler, for the tests to send it the game's events
-function CreateFrame() return { RegisterEvent = function() end, SetScript = function(_, k, fn) if k == "OnEvent" then ON_EVENT = fn end end } end
+-- the addon's event frame: ON_EVENT is its handler, for the tests to send it the game's events. REGISTERED has what it
+-- asked for; a name in BAD_EVENTS is refused, as the game refuses an event it doesn't know.
+REGISTERED, BAD_EVENTS = {}, {}
+function CreateFrame()
+  return { RegisterEvent = function(_, name) if BAD_EVENTS[name] then error("Unknown event " .. name) end REGISTERED[name] = true end,
+    SetScript = function(_, k, fn) if k == "OnEvent" then ON_EVENT = fn end end }
+end
 function EVENT(name, ...) ON_EVENT(nil, name, ...) end
+-- the frame's end: what C_Timer.After is given waits in TIMERS until TICK runs it, as the game runs it at the next frame
+TIMERS = {}
+C_Timer = { After = function(_, fn) TIMERS[#TIMERS + 1] = fn end }
+function TICK() local due = TIMERS; TIMERS = {}; for _, fn in ipairs(due) do fn() end end
 SlashCmdList = {}
 DEFAULT_CHAT_FRAME = { AddMessage = function(_, text) PRINTED = (PRINTED or "") .. text .. "\n" end }
 FA = {}
@@ -175,6 +185,7 @@ FA.Init()
 FA.class = "warrior"
 function RESET(api)
   API = api or "traits"
+  TICK(); FA.resetAsked = nil; BAD_EVENTS = {}   -- a refresh left queued runs now, against the last test's state
   ForeverArmouryDB, ForeverArmouryCharDB = nil, nil; FA.Init(); FA.Talents.Forget(); PLAYER.level = 60
   for _, tab in ipairs(TREE) do for _, t in ipairs(tab) do t[4] = 0 end end
   NODES_FROM()
@@ -289,6 +300,48 @@ class BuildCode(unittest.TestCase):
         for bad in ["FAT2-70170-warrior-Ar%2-0a", "FAT2-70170-warrior-Ar%ZZms-0a"]:
             self.assertRegex(say(bad), r"name of build 1 .* cut off", bad)
 
+    def test_a_long_name_is_cut_to_forty_characters_with_a_note(self):
+        # as the site reads it: the first forty characters, and a note; the writer cuts before it writes
+        self.assertEqual(self.builds("FAT2-70170-rogue-" + "a" * 50 + "-0a"), ([("rogue", "a" * 40, "0a")], ["The name of build 1 was cut to 40 characters."]))
+        self.assertEqual(self.builds("FAT2-70170-rogue-" + "a" * 39 + "%20b-0a"), ([("rogue", "a" * 39, "0a")], ["The name of build 1 was cut to 40 characters."]))   # and no space left at the cut
+        self.assertEqual(self.builds("FAT2-70170-rogue-" + "a" * 40 + "-0a"), ([("rogue", "a" * 40, "0a")], []))
+        write = L.eval("function(name) return FA.Code.Write({ { cls = 'rogue', name = name, picks = '0a' } }) end")
+        self.assertEqual(write("b" * 41), "FAT2-70170-rogue-" + "b" * 40 + "-0a")
+        self.assertEqual(write("名" * 41), "FAT2-70170-rogue-" + "%E5%90%8D" * 40 + "-0a")   # characters, not bytes
+        self.assertEqual(L.eval("FA.Code.MAX_NAME"), 40)
+
+    def test_a_name_that_isnt_utf8_is_refused(self):
+        # bytes that aren't a character, a cut-off one, an overlong one and a surrogate, as decodeURIComponent refuses them
+        for bad in ["FAT2-70170-warrior-%FF%FE-0a", "FAT2-70170-warrior-%C3-0a", "FAT2-70170-warrior-A%C3B-0a", "FAT2-70170-warrior-%C0%80-0a", "FAT2-70170-warrior-%ED%A0%80-0a", "FAT2-70170-warrior-%F4%90%80%80-0a"]:
+            b, e, _ = self.read(bad)
+            self.assertIsNone(b, bad)
+            self.assertRegex(e, r"name of build 1 .* cut off")
+        self.assertEqual(self.builds("FAT2-70170-warrior-%C3%9C%F0%9F%99%82-0a")[0], [("warrior", "Ü🙂", "0a")])
+
+    def test_the_version_and_the_build_are_bounded(self):
+        # a version has three digits at most and a build eight, as the site reads them
+        self.assertIn("isn't a build code", self.read("FAT1234-70170-warrior-A-0a")[1])
+        self.assertIn("newer version", self.read("FAT999-70170-warrior-A-0a")[1])
+        self.assertRegex(self.read("FAT2-123456789-warrior-A-0a")[1], r"doesn't read")
+        self.assertEqual(self.builds("FAT2-12345678-warrior-A-0a")[0], [("warrior", "A", "0a")])
+
+    def test_unicode_whitespace_collapses_too(self):
+        write = L.eval("function(name) return FA.Code.Write({ { cls = 'warrior', name = name, picks = '0a' } }) end")
+        for name, want in [("\u00a0Two\u00a0\u00a0words\u3000", "Two words"), ("\u2003a\u2009b\u200a", "a b"), ("\ufeffx\u2028y\u202f", "x y"), ("\u1680p\u205f\tq\r\n", "p q")]:
+            self.assertEqual(self.builds(write(name))[0], [("warrior", want, "0a")], repr(name))
+        self.assertEqual(self.builds("FAT2-70170-warrior-%C2%A0A%E3%80%80%E3%80%80B%C2%A0-0a")[0], [("warrior", "A B", "0a")])
+        self.assertEqual(self.builds("FAT2-70170-warrior-%C3%A9%C2%A0%C3%A9-0a")[0], [("warrior", "é é", "0a")])   # a letter's bytes stay
+
+    def test_a_long_run_of_dots_reads_at_once(self):
+        # the site's #926: a pattern for the full stops after a code tried every run of them first
+        import time
+        start = time.time()
+        b, e, _ = self.read("FAT2-" + "." * 200000 + "a")
+        self.assertIsNone(b)
+        self.assertRegex(e, r"doesn't read")
+        self.assertLess(time.time() - start, 1.0)
+        self.assertEqual(self.builds("FAT2-70170-warrior-Arms-0a....")[0], [("warrior", "Arms", "0a")])   # a code's trailing full stops still go
+
     def test_points(self):
         points = L.eval("function(p) local t = FA.Code.Points(p); if not t then return nil end local out = {} for i, x in ipairs(t) do out[i] = x.tab .. ':' .. x.cell end return table.concat(out, ' ') end")
         self.assertEqual(points("0001121r"), "1:0 1:1 2:2 2:27")
@@ -393,6 +446,22 @@ class Talents(unittest.TestCase):
         self.assertEqual(lines[-1], "Every talent has a cell of its own.")
 
 
+    def test_a_missing_trait_function_is_said_not_raised(self):
+        # a function the live client lacks answers nil and is named in chat once, rather than a Lua error
+        L.run("RESET('traits'); GET_NODE_INFO, PURCHASE = C_Traits.GetNodeInfo, C_Traits.PurchaseRank; C_Traits.GetNodeInfo = nil")
+        self.addCleanup(L.run, "C_Traits.GetNodeInfo, C_Traits.PurchaseRank = GET_NODE_INFO, PURCHASE; RESET('traits')")
+        self.assertFalse(L.eval("FA.Talents.Ready()"))
+        self.assertIn("This client has no C_Traits.GetNodeInfo", L.eval("PRINTED"))
+        L.run("FA.Talents.Forget(); FA.Talents.Ready()")
+        self.assertEqual(L.eval("PRINTED").count("C_Traits.GetNodeInfo"), 1)
+        L.run("C_Traits.GetNodeInfo = GET_NODE_INFO; FA.Talents.Forget(); C_Traits.PurchaseRank = nil")
+        ok, why = L.eval("function() return FA.Apply({ picks = '0101' }) end")()
+        self.assertFalse(ok)
+        self.assertIn("Nothing was spent", why)
+        self.assertIn("This client has no C_Traits.PurchaseRank", L.eval("PRINTED"))
+        self.assertEqual(L.eval("FA.Talents.Spent()"), 0)
+
+
 class Builds(unittest.TestCase):
     def setUp(self):
         L.run("RESET('traits')")
@@ -402,16 +471,61 @@ class Builds(unittest.TestCase):
         self.assertEqual(add("FAT1-warrior-Arms-0101.warrior-Fury-1a1a.mage-Frost-2b"), (2, 1))
         names = L.eval("function() local out = {} for _, b in ipairs(FA.BuildsFor('warrior')) do out[#out + 1] = b.id .. '=' .. b.name .. ':' .. b.picks end return table.concat(out, ' ') end")
         self.assertEqual(names(), "1=Arms:0101 2=Fury:1a1a")
-        # the same name again replaces the points and keeps the id
+        # the same name with other points is another build, kept beside the first
         self.assertEqual(add("FAT1-warrior-Arms-010102"), (1, 0))
-        self.assertEqual(names(), "1=Arms:010102 2=Fury:1a1a")
-        self.assertEqual(L.eval("FA.ExportCode()"), "FAT1-warrior-Arms-010102.warrior-Fury-1a1a")   # FAT1- in, FAT1- out
+        self.assertEqual(names(), "1=Arms:0101 2=Fury:1a1a 4=Arms:010102")
+        self.assertEqual(L.eval("FA.ExportCode()"), "FAT1-warrior-Arms-0101.warrior-Fury-1a1a.warrior-Arms-010102")   # FAT1- in, FAT1- out
         L.run("FA.SetActive(2)")
         self.assertEqual(L.eval("FA.ActiveBuild().name"), "Fury")
         self.assertTrue(L.eval("FA.ForgetBuild('warrior', 2)"))
         self.assertIsNone(L.eval("FA.ActiveBuild()"))
-        self.assertEqual(names(), "1=Arms:010102")
+        self.assertEqual(names(), "1=Arms:0101 4=Arms:010102")
         self.assertFalse(L.eval("FA.ForgetBuild('warrior', 9)"))
+
+    def test_same_name_builds_both_keep(self):
+        add = L.eval("function(text) local b = assert(FA.Code.Read(text)); return FA.AddBuilds(b) end")
+        names = L.eval("function() local out = {} for _, b in ipairs(FA.BuildsFor('warrior')) do out[#out + 1] = b.id .. '=' .. b.name .. ':' .. b.picks .. '@' .. tostring(b.build) end return table.concat(out, ' ') end")
+        # two builds with one name and different points both keep, and so do two with no name
+        self.assertEqual(add("FAT2-70170-warrior-Arms-0101.warrior-Arms-0202.warrior--0303.warrior--0404"), (4, 0))
+        self.assertEqual(names(), "1=Arms:0101@70170 2=Arms:0202@70170 3=:0303@70170 4=:0404@70170")
+        # the same name and points again updates in place: the id stays, the game build follows the code
+        self.assertEqual(add("FAT2-70200-warrior-Arms-0202 FAT1-warrior--0303"), (2, 0))
+        self.assertEqual(names(), "1=Arms:0101@70170 2=Arms:0202@70200 3=:0303@false 4=:0404@70170")
+        L.run("FA.SetActive(2)")
+        add("FAT2-70170-warrior-Arms-0202")
+        self.assertEqual(L.eval("FA.ActiveBuild().id"), 2)   # a character following it stays on it
+        self.assertEqual(L.eval("#FA.BuildsFor('warrior')"), 4)
+
+    def test_saved_builds_are_checked_at_load(self):
+        L.run("""ForeverArmouryDB = { nextId = 2, builds = {
+            warrior = { { id = 1, name = 'A' }, { id = 2, name = 'B', picks = '0101', build = 70170 }, 'junk', { id = 3, name = 'C', picks = 'zz' },
+                        { name = 'D', picks = '0202' }, { id = 2, name = 7, picks = '0303', build = false }, { id = 9, name = 'E', picks = '0404', build = 'x' } },
+            mage = 'nothing', [5] = { { id = 10, name = 'F', picks = '0101' } } } }
+          ForeverArmouryCharDB = { build = 2 }
+          PRINTED = ''
+          FA.Init()""")
+        names = L.eval("function() local out = {} for _, b in ipairs(FA.BuildsFor('warrior')) do out[#out + 1] = b.id .. '=' .. b.name .. ':' .. b.picks end return table.concat(out, ' ') end")
+        # A has no points, junk isn't a build, C's points don't read, E's build isn't a number, mage isn't a list and 5
+        # isn't a class: dropped. D has no id, the second 2 is taken and its name isn't text: repaired. nextId ends past them.
+        self.assertEqual(names(), "2=B:0101 3=D:0202 4=:0303")
+        self.assertEqual(L.eval("FA.db.nextId"), 5)
+        self.assertIsNone(L.eval("rawget(FA.db.builds, 'mage')"))
+        self.assertIsNone(L.eval("rawget(FA.db.builds, 5)"))
+        self.assertIn("6 saved builds didn't read and were dropped; 2 were repaired.", L.eval("PRINTED"))
+        self.assertEqual(L.eval("FA.ActiveBuild().name"), "B")
+        L.run("SlashCmdList.FOREVERARMOURY('list')")   # walks what's left without an error
+        self.assertIn("> B (2 points)", L.eval("PRINTED"))
+        L.run("ForeverArmouryDB = { nextId = 1, builds = { warrior = { { id = 7, name = 'G', picks = '0101' } } } }; PRINTED = ''; FA.Init()")
+        self.assertEqual(L.eval("PRINTED"), "")   # a file that reads says nothing
+        self.assertEqual(L.eval("FA.db.nextId"), 8)
+
+    def test_the_class_is_known_from_init(self):
+        # an import before PLAYER_LOGIN used to find FA.class nil
+        L.run("FA.class = nil; PLAYER.class = 'MAGE'; FA.Init()")
+        self.assertEqual(L.eval("FA.class"), "mage")
+        self.assertEqual(L.eval("function() return FA.AddBuilds(assert(FA.Code.Read('FAT1-mage-Frost-0a'))) end")(), (1, 0))
+        L.run("PLAYER.class = 'WARRIOR'; FA.Init()")
+        self.assertEqual(L.eval("FA.class"), "warrior")
 
     def test_import_keeps_each_builds_game_build(self):
         add = L.eval("function(text) local b = assert(FA.Code.Read(text)); return FA.AddBuilds(b) end")
@@ -424,13 +538,13 @@ class Builds(unittest.TestCase):
         # Export reads back as it came: every build, each with its build
         back = L.eval("function() local out = {} for _, b in ipairs(assert(FA.Code.Read(FA.ExportCode()))) do out[#out + 1] = b.name .. '@' .. tostring(b.build) end return table.concat(out, ' ') end")
         self.assertEqual(back(), "Arms@70009 Prot@70009 Fury@70170 Old@nil")
-        # pasting Arms again from the game's build moves it to that build's code
-        add("FAT2-70170-warrior-Arms-010101")
+        # pasting Arms again, the same points from the game's build, moves it to that build's code
+        add("FAT2-70170-warrior-Arms-0101")
         self.assertEqual(L.eval("FA.ExportCode()").split("\n"), [
-            "FAT2-70170-warrior-Arms-010101.warrior-Fury-1a1a", "FAT2-70009-warrior-Prot-2121", "FAT1-warrior-Old-0202"])
+            "FAT2-70170-warrior-Arms-0101.warrior-Fury-1a1a", "FAT2-70009-warrior-Prot-2121", "FAT1-warrior-Old-0202"])
         # a build kept before builds were (0.2) is the game's, in the game build's code
         L.run("table.insert(FA.BuildsFor('warrior'), { id = 99, name = 'Kept', picks = '0303' })")
-        self.assertEqual(L.eval("FA.ExportCode()").split("\n")[0], "FAT2-70170-warrior-Arms-010101.warrior-Fury-1a1a.warrior-Kept-0303")
+        self.assertEqual(L.eval("FA.ExportCode()").split("\n")[0], "FAT2-70170-warrior-Arms-0101.warrior-Fury-1a1a.warrior-Kept-0303")
 
     def progress(self, picks):
         return L.eval("function(picks) local p, why = FA.Progress({ picks = picks }); if not p then return nil, why end "
@@ -481,13 +595,6 @@ class Builds(unittest.TestCase):
         L.run("TALENTED = false")                 # the game won't say: no ranks
         self.assertEqual(L.eval("FA.FirstLevel()"), 10)
         self.assertEqual(self.progress("010101").due, 0)
-
-    def test_the_trainer_reset_counts_talented(self):
-        L.run("FA.AddBuilds(assert(FA.Code.Read('FAT2-70170-warrior-Arms-" + GATED + "'))); FA.SetActive(1)")
-        L.run("PLAYER.level = 12; TALENTED = 5; EVENT('CONFIRM_TALENT_WIPE')")
-        self.assertIn("it spends 8 points as Arms says", L.eval("PRINTED"))
-        L.run("PRINTED = ''; TALENTED = 0; EVENT('CONFIRM_TALENT_WIPE')")
-        self.assertIn("it spends 3 points as Arms says", L.eval("PRINTED"))
 
     def test_a_cell_with_no_talent_is_refused(self):
         p, why = L.eval("function() local p, why = FA.Progress({ picks = '00' }); return p, why end")()
@@ -637,6 +744,65 @@ class Apply(unittest.TestCase):
         summary = L.eval("function(picks, limit) local list = FA.PlanApply({ picks = picks }); return FA.Summary(list, limit) end")
         self.assertEqual(summary(GATED, None), "Deflection x5, Tactical Mastery x5, Sweeping Strikes, Cruelty x2")
         self.assertEqual(summary(GATED, 2), "Deflection x5, Tactical Mastery x5, and 2 more")
+
+
+class Events(unittest.TestCase):
+    """The game's events: refreshes gathered into one a frame, combat, what registration says, and the trainer's reset."""
+
+    def setUp(self):
+        L.run("RESET('traits')")
+
+    def test_refreshes_are_one_a_frame(self):
+        L.run("""OLD_REFRESH, OLD_FORGET = FA.Refresh, FA.Talents.Forget
+                 REFRESHED, FORGOT = 0, 0
+                 FA.Refresh = function() REFRESHED = REFRESHED + 1 end
+                 FA.Talents.Forget = function() FORGOT = FORGOT + 1; OLD_FORGET() end""")
+        self.addCleanup(L.run, "FA.Refresh, FA.Talents.Forget = OLD_REFRESH, OLD_FORGET")
+        counts = L.eval("function() return REFRESHED .. ' ' .. FORGOT .. ' ' .. #TIMERS end")
+        # a burst of talent events in one frame: nothing until the frame ends, then one drop of the trees and one redraw
+        L.run("for i = 1, 5 do EVENT('TRAIT_NODE_CHANGED') end; EVENT('PLAYER_TALENT_UPDATE'); EVENT('CHARACTER_POINTS_CHANGED'); EVENT('ACTIVE_COMBAT_CONFIG_CHANGED')")
+        self.assertEqual(counts(), "0 0 1")
+        L.run("TICK()")
+        self.assertEqual(counts(), "1 1 0")
+        # combat's events redraw (the Apply button follows them) without dropping the trees
+        L.run("EVENT('PLAYER_REGEN_DISABLED'); EVENT('PLAYER_REGEN_ENABLED'); TICK()")
+        self.assertEqual(counts(), "2 1 0")
+        # a talent event in the same frame as combat's drops them
+        L.run("EVENT('PLAYER_REGEN_ENABLED'); EVENT('TRAIT_NODE_CHANGED'); TICK()")
+        self.assertEqual(counts(), "3 2 0")
+        # the window's own redraws queue the same way
+        L.run("FA.QueueRefresh(true); FA.QueueRefresh(false); TICK()")
+        self.assertEqual(counts(), "4 3 0")
+
+    def test_login_registers_combat_and_says_what_the_game_refused(self):
+        L.run("REGISTERED = {}; BAD_EVENTS = { ACTIVE_COMBAT_CONFIG_CHANGED = true }; EVENT('PLAYER_LOGIN')")
+        for e in ["PLAYER_REGEN_ENABLED", "PLAYER_REGEN_DISABLED", "TRAIT_NODE_CHANGED", "TRAIT_CONFIG_UPDATED", "CONFIRM_TALENT_WIPE", "CONFIG_COMMIT_FAILED"]:
+            self.assertTrue(L.eval("REGISTERED['%s']" % e), e)
+        self.assertIsNone(L.eval("REGISTERED['ACTIVE_COMBAT_CONFIG_CHANGED']"))
+        self.assertIn("The game wouldn't register the event ACTIVE_COMBAT_CONFIG_CHANGED", L.eval("PRINTED"))
+        L.run("BAD_EVENTS = {}; PRINTED = ''; EVENT('PLAYER_LOGIN')")
+        self.assertTrue(L.eval("REGISTERED['ACTIVE_COMBAT_CONFIG_CHANGED']"))
+        self.assertNotIn("wouldn't register", L.eval("PRINTED"))
+
+    def test_the_trainer_reset_is_told_once_it_went_through(self):
+        L.run("FA.AddBuilds(assert(FA.Code.Read('FAT2-70170-warrior-Arms-" + GATED + "'))); FA.SetActive(1)")
+        L.run("PLAYER.level = 12; TALENTED = 5; TREE[1][1][4] = 2; TREE[3][1][4] = 1; FA.Talents.Forget()")   # three points spent, one off the build
+        # the trainer asks: nothing is said yet, and nothing when the dialog is cancelled and the points stay
+        L.run("EVENT('CONFIRM_TALENT_WIPE'); TICK(); EVENT('PLAYER_TALENT_UPDATE'); TICK()")
+        self.assertEqual(L.eval("PRINTED"), "")
+        # the reset goes through: the points are gone, and the message counts what Apply spends now, not the levels:
+        # 8 unspent at 12 with Talented 5, of the build's 13
+        L.run("for _, tab in ipairs(TREE) do for _, t in ipairs(tab) do t[4] = 0 end end; EVENT('PLAYER_TALENT_UPDATE'); EVENT('TRAIT_NODE_CHANGED'); TICK()")
+        self.assertIn("Your talents are reset. Open your talents and press Apply: it spends 8 points as Arms says.", L.eval("PRINTED"))
+        L.run("EVENT('PLAYER_TALENT_UPDATE'); TICK()")
+        self.assertEqual(L.eval("PRINTED").count("Your talents are reset"), 1)   # said once
+        # without Talented, the level's three
+        L.run("PRINTED = ''; TALENTED = 0; TREE[1][1][4] = 1; FA.Talents.Forget(); EVENT('CONFIRM_TALENT_WIPE'); TREE[1][1][4] = 0; EVENT('PLAYER_TALENT_UPDATE'); TICK()")
+        self.assertIn("it spends 3 points as Arms says", L.eval("PRINTED"))
+        # with nothing spent there's nothing to reset, so nothing to say; and nothing without a build followed
+        L.run("PRINTED = ''; EVENT('CONFIRM_TALENT_WIPE'); EVENT('PLAYER_TALENT_UPDATE'); TICK()")
+        L.run("TREE[1][1][4] = 1; FA.Talents.Forget(); FA.SetActive(nil); EVENT('CONFIRM_TALENT_WIPE'); TREE[1][1][4] = 0; EVENT('PLAYER_TALENT_UPDATE'); TICK()")
+        self.assertEqual(L.eval("PRINTED"), "")
 
 
 class Swap(unittest.TestCase):
@@ -913,10 +1079,12 @@ local function frame(name)
     if k == "Show" then return function(self) rawset(self, "shown", true) end end
     if k == "Hide" then return function(self) rawset(self, "shown", false) end end
     if k == "HookScript" then return function(self, event, fn) HOOKS[#HOOKS + 1] = fn end end
+    if k == "SetScript" then return function(self, event, fn) local s = rawget(self, "scripts"); if not s then s = {}; rawset(self, "scripts", s) end; s[event] = fn end end
+    if k == "GetParent" then return function(self) return rawget(self, "parent") end end
     return function() return frame() end
   end })
 end
-CreateFrame = function(kind, name) local f = frame(name); if name then _G[name] = f end return f end
+CreateFrame = function(kind, name, parent) local f = frame(name); rawset(f, "parent", parent); if name then _G[name] = f end return f end
 UIParent, GameTooltip, ChatFontNormal = frame("UIParent"), frame("GameTooltip"), frame()
 UISpecialFrames = {}
 tinsert = table.insert
@@ -977,6 +1145,48 @@ class UI(unittest.TestCase):
         text, enabled, why = self.panel("apply")
         self.assertEqual((text, enabled), ("Apply", False))
         self.assertEqual(why, "Your next point comes at level 13.")
+
+    def rows(self):
+        return L.eval("function() local p = ForeverArmouryTalentPanel; local out = {} for i, r in ipairs(p.rows) do if r.shown then out[#out + 1] = r.text.text end end "
+                      "return table.concat(out, ' '), p.pager.shown, p.pager.text.text, p.pager.up.enabled, p.pager.down.enabled end")()
+
+    def test_more_builds_than_rows_scroll(self):
+        L.run("FA.ImportText('FAT1-" + ".".join("warrior-B%d-0101" % i for i in range(1, 13)) + "'); FA.Refresh()")
+        names, shown, pager, up, down = self.rows()
+        self.assertEqual(names, " ".join("B%d" % i for i in range(1, 11)))
+        self.assertEqual((shown, pager, up, down), (True, "1-10 of 12", False, True))
+        L.run("FA.ScrollBuilds(1)")
+        self.assertEqual(self.rows()[0], " ".join("B%d" % i for i in range(2, 12)))
+        L.run("FA.ScrollBuilds(10)")   # no further than the last build
+        names, shown, pager, up, down = self.rows()
+        self.assertEqual((names.split()[-1], pager, up, down), ("B12", "3-12 of 12", True, False))
+        # the eleventh build can be picked: the ninth row holds it now, and its click follows it
+        L.run("local row = ForeverArmouryTalentPanel.rows[9]; row.scripts.OnClick(row)")
+        self.assertEqual(L.eval("FA.ActiveBuild().name"), "B11")
+        # the wheel over the panel scrolls too
+        L.run("ForeverArmouryTalentPanel.scripts.OnMouseWheel(nil, 1); ForeverArmouryTalentPanel.scripts.OnMouseWheel(nil, 1)")
+        self.assertEqual(self.rows()[2], "1-10 of 12")
+        L.run("ForeverArmouryTalentPanel.scripts.OnMouseWheel(nil, -1)")
+        self.assertEqual(self.rows()[2], "2-11 of 12")
+        # with ten builds or fewer there's nothing to scroll, and the list starts at the first
+        L.run("FA.ForgetBuild('warrior', 12); FA.ForgetBuild('warrior', 11); FA.Refresh()")
+        names, shown = self.rows()[:2]
+        self.assertEqual((names.split()[0], names.split()[-1], shown), ("B1", "B10", False))
+
+    def test_a_names_escapes_are_drawn_as_text(self):
+        # a | in a name would start a colour in the panel and in chat: it's drawn as ||, a pipe
+        ok, said = L.eval("function(t) return FA.ImportText(t) end")("FAT1-warrior-%7Ccffff0000Red%7Cr-" + GATED)
+        self.assertTrue(ok)
+        self.assertIn("Following ||cffff0000Red||r.", said)
+        L.run("FA.Refresh()")
+        self.assertEqual(self.rows()[0], "||cffff0000Red||r")
+        L.run("local row = ForeverArmouryTalentPanel.rows[1]; row.forget.scripts.OnClick(row.forget)")
+        self.assertEqual(L.eval("POPUPS[1].text"), "||cffff0000Red||r")
+        L.run("PLAYER.level = 12; FA.Talents.Forget(); FA.AskApply()")
+        self.assertIn("as ||cffff0000Red||r says?", L.eval("POPUPS[2].text"))
+        L.run("PRINTED = ''; SlashCmdList.FOREVERARMOURY('list')")
+        self.assertIn("> ||cffff0000Red||r (13 points)", L.eval("PRINTED"))
+        self.assertEqual(L.eval("FA.ExportCode()"), "FAT1-warrior-%7Ccffff0000Red%7Cr-" + GATED)   # the code keeps the name as it is
 
     def test_off_build_points_show_the_swap(self):
         L.run("FA.ImportText('FAT1-warrior-Arms-" + GATED + "'); TREE[3][1][4] = 2; FA.Talents.Forget(); FA.Refresh()")

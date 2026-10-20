@@ -51,8 +51,21 @@ local DEFAULTS = { builds = {}, gear = {}, nextId = 1, parts = { plan = true, ge
 function FA.Print(text)
   (DEFAULT_CHAT_FRAME or ChatFrame1):AddMessage("|cffffd100Forever Armoury:|r " .. tostring(text))
 end
+--[[ Text from outside the addon (a build's name) as the game draws it literally: a | starts a colour or texture
+     escape in a font string and in chat, and || is a pipe. ]]
+function FA.Escape(text) return (tostring(text or ""):gsub("|", "||")) end
 
---[[ The saved variables, with anything a new version added filled in. ]]
+--[[ The character's class as the site names it ("warrior"), read whenever it's asked for, so it's there from Init on
+     and not only after PLAYER_LOGIN: an import before then used to error on it. ]]
+function FA.ReadClass()
+  local _, cls = UnitClass("player")
+  FA.class = (cls or ""):lower()
+  return FA.class
+end
+
+--[[ The saved variables, with anything a new version added filled in, and the saved builds checked one by one
+     (Builds.lua's FA.CheckBuilds): a build another version or a hand-edited file left without points would break the
+     list, so one that can't be repaired is dropped, and chat says so. ]]
 function FA.Init()
   ForeverArmouryDB = ForeverArmouryDB or {}
   local db = ForeverArmouryDB
@@ -63,6 +76,16 @@ function FA.Init()
   for key, on in pairs(DEFAULTS.parts) do if db.parts[key] == nil then db.parts[key] = on end end
   ForeverArmouryCharDB = ForeverArmouryCharDB or {}
   FA.db, FA.char = db, ForeverArmouryCharDB
+  FA.ReadClass()
+  if FA.CheckBuilds then
+    local dropped, repaired = FA.CheckBuilds()
+    if dropped > 0 or repaired > 0 then
+      local said = {}
+      if dropped > 0 then said[#said + 1] = dropped .. (dropped == 1 and " saved build" or " saved builds") .. " didn't read and " .. (dropped == 1 and "was" or "were") .. " dropped" end
+      if repaired > 0 then said[#said + 1] = repaired .. (repaired == 1 and " was" or " were") .. " repaired" end
+      FA.Print(table.concat(said, (dropped > 0 and repaired > 0) and "; " or "") .. ". Import the builds again from the site if one is missing.")
+    end
+  end
 end
 
 function FA.PartOn(key) return FA.db and FA.db.parts[key] ~= false end
@@ -104,7 +127,7 @@ SlashCmdList.FOREVERARMOURY = function(msg)
     local list = FA.BuildsFor and FA.BuildsFor(FA.class) or {}
     if #list == 0 then FA.Print("No builds for this class yet. /fa import to paste some in.") end
     local active = FA.ActiveBuild and FA.ActiveBuild()
-    for _, b in ipairs(list) do FA.Print((active == b and "> " or "  ") .. b.name .. " (" .. math.floor(#b.picks / 2) .. " points)") end
+    for _, b in ipairs(list) do FA.Print((active == b and "> " or "  ") .. FA.Escape(b.name) .. " (" .. math.floor(#b.picks / 2) .. " points)") end
   elseif cmd == "plan" then
     local on = rest:lower()
     if on == "on" then FA.SetPart("plan", true) elseif on == "off" then FA.SetPart("plan", false) else FA.SetPart("plan", not FA.PartOn("plan")) end
@@ -126,8 +149,48 @@ SlashCmdList.FOREVERARMOURY = function(msg)
   end
 end
 
+--[[ ---- a refresh a frame at most ----
+     The game's talent events come in bursts (TRAIT_NODE_CHANGED fires for each node a commit touches), and each one
+     used to drop the cached trees and redraw the panel. QueueRefresh gathers them: the first in a frame schedules one
+     pass at the frame's end (C_Timer.After(0)), which forgets the trees if any event asked it to, checks for a trainer
+     reset (below) and redraws. Without C_Timer (outside the game) it runs at once. ]]
+local queued, dropViews = false, false
+function FA.QueueRefresh(forget)
+  dropViews = dropViews or forget and true or false
+  if queued then return end
+  queued = true
+  local function run()
+    queued = false
+    if dropViews then FA.Talents.Forget() end
+    dropViews = false
+    FA.CheckReset()
+    if FA.Refresh then FA.Refresh() end
+  end
+  if C_Timer and C_Timer.After then C_Timer.After(0, run) else run() end
+end
+
+--[[ ---- the trainer's reset ----
+     CONFIRM_TALENT_WIPE comes when the trainer asks, before the person says yes or no, so nothing is said then: the
+     points spent are kept in FA.resetAsked, and the first refresh after it that finds them all gone (the reset went
+     through) says what Apply does next, counting the points it would spend now (FA.PlanApply), not the levels. A
+     dialog cancelled leaves resetAsked set, and the next real reset, by whatever path, is told the same way. ]]
+function FA.CheckReset()
+  if not FA.resetAsked then return end
+  if not FA.Talents.Ready() or FA.Talents.Spent() > 0 then return end
+  FA.resetAsked = nil
+  local build = FA.PartOn("plan") and FA.ActiveBuild()
+  local list = build and FA.PlanApply(build)
+  local n = list and #list or 0
+  if n == 0 then return end
+  FA.Print("Your talents are reset. Open your talents and press Apply: it spends " .. n .. (n == 1 and " point" or " points") .. " as " ..
+    (build.name ~= "" and FA.Escape(build.name) or "your build") .. " says.")
+end
+
 --[[ Events: the saved variables once this addon has loaded, the talent window once Blizzard's talent UI has (it
-     loads on demand), and the character's points and level as they change. ]]
+     loads on demand), the character's points and level as they change, and combat, which the Apply button follows.
+     An event the client doesn't have fails to register, and chat names it rather than the addon going quiet on it. ]]
+local EVENTS = { "PLAYER_LEVEL_UP", "PLAYER_TALENT_UPDATE", "TRAIT_NODE_CHANGED", "TRAIT_CONFIG_UPDATED", "ACTIVE_TALENT_GROUP_CHANGED",
+  "ACTIVE_COMBAT_CONFIG_CHANGED", "CHARACTER_POINTS_CHANGED", "CONFIG_COMMIT_FAILED", "CONFIRM_TALENT_WIPE", "PLAYER_REGEN_ENABLED", "PLAYER_REGEN_DISABLED" }
 local events = CreateFrame("Frame")
 events:RegisterEvent("ADDON_LOADED")
 events:RegisterEvent("PLAYER_LOGIN")
@@ -136,10 +199,10 @@ events:SetScript("OnEvent", function(_, event, arg1)
     if arg1 == ADDON then FA.Init()
     elseif FA.Talents.Loaded(arg1) and FA.HookTalentFrame then FA.HookTalentFrame() end
   elseif event == "PLAYER_LOGIN" then
-    FA.class = (select(2, UnitClass("player")) or ""):lower()   -- "warrior", as the site names it
-    for _, e in ipairs({ "PLAYER_LEVEL_UP", "PLAYER_TALENT_UPDATE", "TRAIT_NODE_CHANGED", "TRAIT_CONFIG_UPDATED",
-      "ACTIVE_TALENT_GROUP_CHANGED", "CHARACTER_POINTS_CHANGED", "CONFIG_COMMIT_FAILED", "CONFIRM_TALENT_WIPE" }) do
-      pcall(events.RegisterEvent, events, e)
+    FA.ReadClass()
+    for _, e in ipairs(EVENTS) do
+      local ok, err = pcall(events.RegisterEvent, events, e)
+      if not ok then FA.Print("The game wouldn't register the event " .. e .. " (" .. tostring(err) .. "), so the addon won't hear it.") end
     end
     if FA.HookTalentFrame then FA.HookTalentFrame() end
     if FA.HookCharacterFrame then FA.HookCharacterFrame() end
@@ -148,21 +211,14 @@ events:SetScript("OnEvent", function(_, event, arg1)
     --[[ The commit is a cast, so the game can turn it down after CommitConfig said yes: what the addon staged is
          rolled back here. A commit of the window's own is the window's to report. ]]
     if FA.Talents.CommitFailed(arg1) then FA.Print("The game didn't apply the talents, so they were rolled back. Nothing was spent.") end
-    FA.Talents.Forget()
-    if FA.Refresh then FA.Refresh() end
+    FA.QueueRefresh(true)
   elseif event == "CONFIRM_TALENT_WIPE" then
-    --[[ At a trainer's reset, before it's confirmed: what Apply does after it. The reset itself, and its cost, stay
-         the game's own dialog. ]]
-    local build = FA.PartOn("plan") and FA.ActiveBuild()
-    local points = build and FA.Code.Points(build.picks)
-    if points then
-      local due = math.min(#points, math.max(0, (UnitLevel("player") or 1) - FA.FirstLevel() + 1))
-      FA.Print("After the reset, open your talents and press Apply: it spends " .. due .. (due == 1 and " point" or " points") .. " as " ..
-        (build.name ~= "" and build.name or "your build") .. " says.")
-    end
+    local spent = FA.Talents.Spent()
+    if spent > 0 then FA.resetAsked = spent end
+  elseif event == "PLAYER_REGEN_ENABLED" or event == "PLAYER_REGEN_DISABLED" then
+    FA.QueueRefresh(false)   -- the points haven't changed, only whether Apply may spend them
   else
     if event == "TRAIT_CONFIG_UPDATED" then FA.Talents.Committed(arg1) end
-    FA.Talents.Forget()
-    if FA.Refresh then FA.Refresh() end
+    FA.QueueRefresh(true)
   end
 end)

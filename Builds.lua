@@ -13,17 +13,51 @@ function FA.BuildsFor(cls)
   return list
 end
 
+--[[ Each saved build of every class checked (FA.Init calls it): a build is a table with a number id, a name that is
+     text (none becomes ""), picks FA.Code.Points reads, and a build that is a number, false or nil. One without an
+     id, or with an id another has, gets a new one; one whose name isn't text gets ""; anything else is dropped, since
+     there's nothing to follow. nextId ends above every id. Answers how many were dropped and how many repaired. ]]
+function FA.CheckBuilds()
+  local dropped, repaired, ids = 0, 0, {}
+  for cls, list in pairs(FA.db.builds) do
+    if type(cls) ~= "string" or type(list) ~= "table" then
+      FA.db.builds[cls] = nil
+      dropped = dropped + (type(list) == "table" and #list or 1)
+    else
+      local kept = {}
+      for _, b in ipairs(list) do
+        if type(b) == "table" and FA.Code.Points(b.picks) and (b.build == nil or b.build == false or type(b.build) == "number") then
+          local fixed = false
+          if type(b.id) ~= "number" or ids[b.id] then b.id = FA.db.nextId; fixed = true end
+          if type(b.name) ~= "string" then b.name = ""; fixed = true end
+          ids[b.id] = true
+          if b.id >= FA.db.nextId then FA.db.nextId = b.id + 1 end
+          if fixed then repaired = repaired + 1 end
+          kept[#kept + 1] = b
+        else
+          dropped = dropped + 1
+        end
+      end
+      for i = #list, 1, -1 do list[i] = nil end
+      for i, b in ipairs(kept) do list[i] = b end
+    end
+  end
+  return dropped, repaired
+end
+
 --[[ Keeps the builds a code gave (FA.Code.Read), each with the game build it's from, so Export gives it back as it
-     came. A build with the name of one already kept for its class replaces that one's points and build and keeps its
-     id, so pasting a build again after changing it on the site updates it, and the characters following it stay on
-     it. Answers how many were for this character's class, and how many for others. ]]
+     came. A build is the same as one already kept for its class when its name and its points are: that one keeps its
+     id and takes the game build, so pasting the same build again changes nothing, and the characters following it stay
+     on it. A build with a kept name but other points is kept beside it, as two builds can share a name (or have none)
+     and still differ; the x beside a build forgets the one not wanted. Answers how many were for this character's
+     class, and how many for others. ]]
 function FA.AddBuilds(builds)
   local mine, others = 0, 0
   for _, b in ipairs(builds) do
     local list, found = FA.BuildsFor(b.cls), nil
-    for _, old in ipairs(list) do if old.name == b.name then found = old end end
+    for _, old in ipairs(list) do if old.name == b.name and old.picks == b.picks then found = old end end
     local build = b.build or false
-    if found then found.picks, found.build = b.picks, build
+    if found then found.build = build
     else
       list[#list + 1] = { id = FA.db.nextId, name = b.name, picks = b.picks, build = build }
       FA.db.nextId = FA.db.nextId + 1

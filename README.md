@@ -10,7 +10,7 @@ Copy the folder into `World of Warcraft\_forever_\Interface\AddOns\ForeverArmour
 
 ## Use
 
-- `/fa` opens the talent window, with the addon's panel beside it: your builds for this class, the one you follow marked, and its next talent named and lit in the trees. Click a build to follow it; the **x** beside it forgets it.
+- `/fa` opens the talent window, with the addon's panel beside it: your builds for this class, the one you follow marked, and its next talent named and lit in the trees. Click a build to follow it; the **x** beside it forgets it. Past ten builds the list scrolls: the arrows under it, or the wheel over the panel.
 - **Import** (or `/fa import`) opens the box to paste a code into. One paste can hold every build of a class, or several codes, and a gear route code beside them.
 - **Export** (or `/fa export`) puts the code for every build of your class in the box, to paste into the site's Import box. Each build keeps the game build it was imported from, so builds from different game builds come out as a code each, one per line; the site reads them all from one paste.
 - **Apply** (or `/fa apply`) spends your unspent points as the build you follow says, in its order, after one confirm that names them. It's all or none: if the game refuses a point, or fails the commit, nothing is spent. The button says how many points it would spend, or why it can't.
@@ -19,14 +19,14 @@ Copy the folder into `World of Warcraft\_forever_\Interface\AddOns\ForeverArmour
 
 With the Legacy perk **Talented**, your first talent point comes earlier, a level for each rank; the addon reads your rank from the game and moves the build's levels to match.
 
-A build is kept for the account, so every character of its class can follow it. Pasting a build again, after changing it on the site, updates the one with that name.
+A build is kept for the account, so every character of its class can follow it. Pasting a build again changes nothing, and a build changed on the site comes in beside the one it had been, since two builds can share a name and differ: the **x** forgets the one you don't want.
 
 ### Swapping builds
 
 Click another build in the panel to follow it. If your points fit it, Apply carries on with it. If you have points it doesn't, the panel names them and says what it takes:
 
 - **Your other spec fits it** (with dual spec): activate that spec in the talent window, then Apply.
-- **Otherwise**: reset your talents at a class trainer. When the trainer asks, the addon says how many points Apply will spend afterwards; the reset and its cost stay the game's own dialog. Then open your talents and press Apply once.
+- **Otherwise**: reset your talents at a class trainer. Once the reset has gone through, the addon says how many points Apply will spend; the reset and its cost stay the game's own dialog. Then open your talents and press Apply once.
 
 ## Leveling gear
 
@@ -81,7 +81,7 @@ A client that still has the old API gets the same trees from it, so the rest of 
 - `Gear.lua`: the saved gear routes, the character's route (its side and spec), what it wears and carries, and the next pieces at its level (`FA.Gear.Plan`).
 - `GearUI.lua`: the panel beside the character window.
 - `docs/gear-route.md`: the leveling gear part's design: the code, what the site adds, and what is still to check in the beta.
-- `test/run.py`: everything checked in the game's Lua 5.1 (LuaJIT when lupa has it) against a stub of the game: both talent APIs, the trait system's staging with tier gates, commit, a commit failed late, and rollback, dual spec, combat, Talented, the gear route code read and written (a whole route of the site's round-trips), the next pieces at a level against what is worn and carried, and both panels drawn against a mock of the frame API. `pip install lupa`, then `python test/run.py`; it passes under any locale, and with `LC_ALL=C`.
+- `test/run.py`: everything checked in the game's Lua 5.1 (LuaJIT when lupa has it) against a stub of the game: both talent APIs, the trait system's staging with tier gates, commit, a commit failed late, and rollback, dual spec, combat, Talented, the events (one refresh a frame, the trainer's reset), the saved builds checked at load, the gear route code read and written (a whole route of the site's round-trips), the next pieces at a level against what is worn and carried, and both panels drawn against a mock of the frame API. `pip install lupa`, then `python test/run.py`; it passes under any locale, and with `LC_ALL=C`.
 - `.pkgmeta`: what the CurseForge packager builds: the folder `ForeverArmoury`, without the tests, the release script and this file, with the version from the git tag, and `CHANGELOG.md` as the changelog CurseForge shows.
 - `scripts/release.sh`: builds the release zip from a tag, checks what is in it, and uploads it to CurseForge when asked. See [Releasing](#releasing).
 
@@ -128,7 +128,7 @@ MIT, in `LICENSE`.
 
 ## Still to settle
 
-- **In the beta** (forever-armoury#1536): that the nodes' positions sort into the same rows and columns as the site's trees, and nothing is left out (`/fa debug`); what `CanChangeTalents` answers before and after a point is staged; that Apply's purchases and commit go through from an addon outside the window, and what a commit cast that's interrupted leaves; that the unspent count and Talented's rank read as the addon expects; the panel's place beside the window, and the highlight's look on the round buttons.
+- **In the beta** (forever-armoury#1536): that the nodes' positions sort into the same rows and columns as the site's trees, and nothing is left out (`/fa debug`); what `CanChangeTalents` answers before and after a point is staged; that Apply's purchases and commit go through from an addon outside the window, and what a commit cast that's interrupted leaves; that the unspent count and Talented's rank read as the addon expects; the panel's place beside the window, and the highlight's look on the round buttons; that `CONFIRM_TALENT_WIPE` fires at the trainer and a talent event follows the reset (the reset message waits for both), and that `ACTIVE_COMBAT_CONFIG_CHANGED` and the `PLAYER_REGEN` events register (chat names one that doesn't).
 - **The leveling gear in the beta** (`docs/gear-route.md`): `GetItemInfo` on Forever's item ids above 270,000 for an item not yet cached, and the load events after it; `C_Container` in interface 16001; whether the game names Forever's own dungeons, bosses and quests from their ids; the panel's place beside the character window.
 - **The site's Copy for addon** for routes: the Leveling plate's button and `public/content/gear-code.js`, writing the code `docs/gear-route.md` defines.
 - **The CurseForge listing** (forever-armoury#1537): the project, its ID in the `.toc`, and the release process.
