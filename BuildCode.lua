@@ -1,7 +1,7 @@
 --[[ A build code as the site writes it (forever-armoury: public/content/build-code.js, #863), read and written here:
 
-       FAT2-70170-warrior-Arms%20PvP-0a0a0a0b0b0b1c
-       FAT <version> - <build> - <class> - <name> - <picks> { . <class> - <name> - <picks> }
+       FAT3-70170-warrior-Arms%20PvP-0a0a0a0b0b0b1c1c-3
+       FAT <version> - <build> - <class> - <name> - <picks> - <talented> { . <class> - <name> - <picks> - <talented> }
 
      The build is the game client's build number the talents are from (GetBuildInfo's second answer, 70170 of
      1.60.1.70170): a talent that moves between the beta's builds changes what a cell means, so the site carries a
@@ -11,19 +11,24 @@
      for a build with none. The picks are the build's points in the order spent, two characters a point: the tree
      (0-2) then the talent's cell, (tier - 1) * 4 + (column - 1), in base 36. Point n is taken at level n + 9. The
      cell is matched to a talent with the game's own tier and column (Builds.lua), so nothing here needs changing at
-     a patch. Several builds join with ".".
+     a patch. The talented is the build's rank of the Legacy perk Talented (forever-armoury#512, #1540), one digit 0
+     to 5: it brings the first point that many levels early. Several builds join with ".".
 
      FA.Code.Read(text) reads every code in a pasted text, ignoring what's around it, and answers
-       builds, nil, notes   builds: { { cls, name, picks, build }, ... }   notes: what was left out, to tell the person
+       builds, nil, notes   builds: { { cls, name, picks, build, talented }, ... }   notes: what was left out, to tell the person
        nil, error           error: why, in a sentence
-     build is the game build the picks are from, or nil for a FAT1- code, from before the build was written in.
-     FA.Code.Write(builds[, build]) is the code for a list of { cls, name, picks } from one game build: the game's own
-     when build is nil, and a FAT1- code when it's false, for picks from a code from before the build was written in.
+     build is the game build the picks are from, or nil for a FAT1- code, from before the build was written in (and for
+     a build of 0, which Write gives for those). talented is the build's Talented rank, 0 for a FAT1- or FAT2- code,
+     from before the rank was written in.
+     FA.Code.Write(builds[, build]) is the code for a list of { cls, name, picks, talented } from one game build: the
+     game's own when build is nil, and 0 when it's false, for picks from a code from before the build was written in.
+     A talented that isn't a whole number from 1 to 5 is written as 0.
      FA.Code.GameBuild() is the build the game is on, as a code carries it.
      FA.Code.Points(picks) is a picks string as { { tab = 1..3, cell = 0..27 }, ... }, or nil for one that doesn't read.
 
      Each version has its own reader in READERS, so a code from an older site still reads when the format changes.
-     Version 1 had no build: FAT1-<class>-<name>-<picks>{.<class>-<name>-<picks>}.
+     Version 1 had no build: FAT1-<class>-<name>-<picks>{.<class>-<name>-<picks>}. Version 2 had no talented:
+     FAT2-<build>-<class>-<name>-<picks>{.<class>-<name>-<picks>}.
 
      Letters and digits are spelt out as A-Z, a-z and 0-9 rather than %w, which follows the locale: under a UTF-8 one
      it takes bytes above 127 for letters, and a name would pass them through unencoded. The same goes for whitespace,
@@ -36,12 +41,13 @@ local _, FA = ...
 local Code = {}
 FA.Code = Code
 
-Code.VERSION = 2
+Code.VERSION = 3
 local CLASSES = { warrior = true, paladin = true, hunter = true, rogue = true, priest = true, shaman = true, mage = true, warlock = true, druid = true }
 --[[ a code in a pasted text: its start, and everything after it that a code is made of ]]
 local FIND = "FAT%d%d?%d?%-[A-Za-z0-9%%%.%-]*"
 local MAX_NAME = 40
-local NOT_A_CODE = "That isn't a build code. A build code starts with FAT2- (or FAT1-, from before)."
+local MAX_TALENTED = 5
+local NOT_A_CODE = "That isn't a build code. A build code starts with FAT3- (or FAT2- or FAT1-, from before)."
 
 --[[ JavaScript's \s in UTF-8, as the site's reader collapses it: the ASCII spaces, then each of the Unicode ones. ]]
 local SPACES = { "\194\160", "\225\154\128", "\226\128[\128-\138]", "\226\128\168", "\226\128\169", "\226\128\175",
@@ -82,12 +88,16 @@ local function decodeName(s)
   local name = s:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
   return validUtf8(name) and name or nil
 end
---[[ s without the dots at its end, counted back from the end: a pattern like "%.+$" tries every run of dots in a long
-     pasted code, and is quadratic in its length (forever-armoury #926). ]]
-local function trimDots(s)
+--[[ s without the dots at its end (and the dashes, with `dashes`), counted back from the end: a pattern like "%.+$"
+     tries every run of dots in a long pasted code, and is quadratic in its length (forever-armoury #926). ]]
+local function trimEnd(s, dashes)
   local n = #s
-  while n > 0 and s:byte(n) == 46 do n = n - 1 end
+  while n > 0 and (s:byte(n) == 46 or (dashes and s:byte(n) == 45)) do n = n - 1 end
   return s:sub(1, n)
+end
+--[[ A Talented rank as the code carries it: a whole number from 1 to 5, else 0. ]]
+local function talentedOf(n)
+  return type(n) == "number" and n % 1 == 0 and n >= 1 and n <= MAX_TALENTED and n or 0
 end
 --[[ The first MAX_NAME characters of a name (UTF-8 characters, not bytes), and whether it was longer. ]]
 local function cutName(name)
@@ -120,22 +130,29 @@ end
 
 function Code.Write(builds, build)
   local parts = {}
-  for i, b in ipairs(builds) do parts[i] = b.cls .. "-" .. encodeName((cutName(clean(b.name)))) .. "-" .. (b.picks or "") end
-  if build == false then return "FAT1-" .. table.concat(parts, ".") end
+  for i, b in ipairs(builds) do
+    parts[i] = b.cls .. "-" .. encodeName((cutName(clean(b.name)))) .. "-" .. (b.picks or "") .. "-" .. talentedOf(b.talented)
+  end
+  if build == false then build = 0 end   -- from before codes carried it: the site reads 0 as older than any build
   return "FAT" .. Code.VERSION .. "-" .. (build or gameBuild()) .. "-" .. table.concat(parts, ".")
 end
 
 --[[ Version 1: <class>-<name>-<picks>{.<class>-<name>-<picks>}, with no build. Adds to out.builds and out.empty, each
-     build with the game build it's from (nil for none), and answers why it stopped, or nil once it has read them all. ]]
-local function read1(body, out, build)
+     build with the game build it's from (nil for none), and answers why it stopped, or nil once it has read them all.
+     With `ranked`, each build ends with its Talented rank, as version 3 has it: <class>-<name>-<picks>-<talented>. ]]
+local function read1(body, out, build, ranked)
+  local pattern = "^([a-z]+)%-([A-Za-z0-9%%]*)%-([0-9a-r]*)" .. (ranked and "%-([A-Za-z0-9%%]*)$" or "$")
   for seg in (body .. "."):gmatch("(.-)%.") do
     local n = #out.builds + out.empty + 1
-    local cls, name, picks = seg:match("^([a-z]+)%-([A-Za-z0-9%%]*)%-([0-9a-r]*)$")
+    local cls, name, picks, rank = seg:match(pattern)
     if not cls or not CLASSES[cls] or not Code.Points(picks) then
       return "Build " .. n .. " of that code doesn't read. It may be cut off: copy the whole code again."
     end
     name = decodeName(name)
     if not name then return "The name of build " .. n .. " in that code is cut off or changed. Copy the whole code again." end
+    if ranked and not rank:match("^[0-5]$") then
+      return "The Talented rank of build " .. n .. " in that code isn't a number from 0 to " .. MAX_TALENTED .. ". Copy the whole code again."
+    end
     if picks == "" then out.empty = out.empty + 1
     else
       local cut
@@ -144,18 +161,21 @@ local function read1(body, out, build)
         name = clean(name)
         out.notes[#out.notes + 1] = "The name of build " .. n .. " was cut to " .. MAX_NAME .. " characters."
       end
-      out.builds[#out.builds + 1] = { cls = cls, name = name, picks = picks, build = build }
+      out.builds[#out.builds + 1] = { cls = cls, name = name, picks = picks, build = build, talented = ranked and tonumber(rank) or 0 }
     end
   end
   return nil
 end
---[[ Version 2: <build>-, then as version 1. ]]
-local function read2(body, out)
+--[[ Version 2: <build>-, then as version 1. A build of 0 is none: Write gives it for picks from before codes carried one. ]]
+local function read2(body, out, ranked)
   local build, rest = body:match("^(%d+)%-(.*)$")
   if not build or #build > 8 then return "That code doesn't read. It may be cut off: copy the whole code again." end
-  return read1(rest, out, tonumber(build))
+  build = tonumber(build)
+  return read1(rest, out, build ~= 0 and build or nil, ranked)
 end
-local READERS = { [1] = read1, [2] = read2 }
+--[[ Version 3: as version 2, with each build's Talented rank (0 to 5) at its end. ]]
+local function read3(body, out) return read2(body, out, true) end
+local READERS = { [1] = read1, [2] = read2, [3] = read3 }
 
 function Code.Read(text)
   text = tostring(text or "")
@@ -169,8 +189,8 @@ function Code.Read(text)
       if version > Code.VERSION then return nil, "That code is from a newer version of Forever Armoury than this addon. Update the addon and try again." end
       return nil, NOT_A_CODE
     end
-    --[[ a sentence's full stop after the code isn't part of it ]]
-    local body = trimDots((m:gsub("^FAT%d+%-", "")))
+    --[[ a sentence's full stop after the code isn't part of it, nor (as a version 3 code ends in a digit) a dash ]]
+    local body = trimEnd((m:gsub("^FAT%d+%-", "")), version >= 3)
     local err = reader(body, out)
     if err then return nil, err end
   end
