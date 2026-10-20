@@ -128,6 +128,7 @@ end
        next     the first point of the build not taken: { n, talent, rank, level }, talent being Talents.At's, rank the
                 rank that point makes and level the level the build takes it at; nil once every point is taken
        left     every point not taken, in the build's order, each as next is
+       taken    every point of the build the spec has, in the build's order, each as next is (the strip's past)
        extra    the talents with more ranks than the build gives them: { { talent, over }, ... }
        points   how many points the build has
        spent    how many points the spec has spent
@@ -138,7 +139,7 @@ function FA.Progress(build, view)
   if not points then return nil, "That build's code doesn't read." end
   view = view or FA.Talents.View()
   if not view then return nil, "The game hasn't given its talents yet. Open the talent window and try again." end
-  local planned, byKey, taken, left = {}, {}, 0, {}
+  local planned, byKey, taken, left, had = {}, {}, 0, {}, {}
   local first = FA.FirstLevel()
   for n, p in ipairs(points) do
     local t = FA.Talents.At(p.tab, p.cell, view)
@@ -146,8 +147,9 @@ function FA.Progress(build, view)
     local key = p.tab * 100 + p.cell
     planned[key] = (planned[key] or 0) + 1
     byKey[key] = t
-    if planned[key] <= t.rank then taken = taken + 1
-    else left[#left + 1] = { n = n, talent = t, rank = planned[key], level = n + first - 1 } end
+    local point = { n = n, talent = t, rank = planned[key], level = n + first - 1 }
+    if planned[key] <= t.rank then taken = taken + 1; had[#had + 1] = point
+    else left[#left + 1] = point end
   end
   local extra = {}
   for tab, cells in pairs(view.cells) do
@@ -159,8 +161,25 @@ function FA.Progress(build, view)
   table.sort(extra, function(a, b) return a.talent.tab * 100 + a.talent.cell < b.talent.tab * 100 + b.talent.cell end)
   local spent = FA.Talents.Spent(view)
   local level = UnitLevel("player") or 1
-  return { next = left[1], left = left, extra = extra, points = #points, spent = spent, off = spent - taken,
+  return { next = left[1], left = left, taken = had, extra = extra, points = #points, spent = spent, off = spent - taken,
     due = math.max(0, math.min(#points, level - first + 1)) }
+end
+
+--[[ What the strip beside the talent window shows of a build's progress (Progress's answer): the last `past` points
+     taken, the next, then up to `coming` more, each as { kind = "taken" | "next" | "coming", n, talent, rank, level }; the
+     next also says now, whether its point can be spent (its level has come, and the spec has no point off the build).
+     Answers the list and how many points follow it. A build that's off its order shows the points Progress could place. ]]
+function FA.StripPlan(p, past, coming)
+  local out = {}
+  local function add(kind, point)
+    local e = { kind = kind, n = point.n, talent = point.talent, rank = point.rank, level = point.level }
+    out[#out + 1] = e
+    return e
+  end
+  for i = math.max(1, #p.taken - past + 1), #p.taken do add("taken", p.taken[i]) end
+  if p.next then add("next", p.next).now = p.next.n <= p.due and p.off == 0 end
+  for i = 2, math.min(#p.left, coming + 1) do add("coming", p.left[i]) end
+  return out, math.max(0, #p.left - 1 - coming)
 end
 
 --[[ What Apply would spend now: the build's points not taken, in order, as many as the character has unspent.

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0 (unreleased)
+
+The talent column (forever-armoury #1562, #1563):
+
+- **A strip of icons beside the talent window**: the build you follow, talent by talent in its order, one icon for each rank (a talent with ranks shows `r/m` on it). The last points you took are faded with a green check, the next one has a gold border and the game's glow with **Now** under it when you can spend it (else the level it comes at), and the ones coming have the level they're due at in a corner. A **⋮** under them says more follow. The icon and name come from the game; an icon the game hasn't given yet is a question mark. It shows with the panel and only while you follow a build, redraws as you spend points, change build or swap spec, and the panel sits against it. A build that's off its order shows the points it can place and nothing wrong.
+- **How many it shows** is two sliders on the settings page: the taken points (3 by default, up to 5) and the coming ones (5, up to 8).
+- **Hover an icon** and that talent lights in the tree, in blue, beside the next talent's glow, which stays; leaving puts it out. The tooltip is the talent's own spell, then its level and rank, and "Taken" for a rank you have. The highlight is a frame of the addon's, never something written on the game's pooled button.
+- **The panel's build list is a section**: a **Builds (N)** header with a plus or minus opens and closes it, and closed it says which build you follow. It's open until you follow a build and closed after, and what you choose is kept for the character. The panel is as tall as what it shows, with Import and Export at the bottom.
+
 ## 0.4.0 (unreleased)
 
 Small fixes after the first release (forever-armoury #1539):

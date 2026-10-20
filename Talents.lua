@@ -14,7 +14,7 @@
      A view is one spec's talents: { trees = { { name, icon }, ... }, cells = { [tab] = { [cell] = talent } } }, a
      talent being { tab, cell, row, col, name, icon, rank, max, node }; rank is what's spent, staged points included, and
      node names it to the game (a node id, or a talent index). From the trait system a talent also has x and y, its
-     node's position, and the view has grid, each tree's { colStep, rowStep, originX, topY } it was sorted by, and
+     node's position and spell, its definition's spell id (the strip's tooltip shows it), and the view has grid, each tree's { colStep, rowStep, originX, topY } it was sorted by, and
      dropped, each tree's nodes that didn't sort into a cell of their own: { { talent, why }, ... }.
 
      FA.Talents.View([configID])     a spec's view (the active one's without a config), or nil before the game answers
@@ -32,6 +32,7 @@
      FA.Talents.Forget()             drop what's cached: the next call asks the game again (called when points change)
      FA.Talents.Frame() / Window()   the talent window's frame and the window the panel sits on, once loaded
      FA.Talents.Button(t)            the window's button for a talent, or nil (the panel lights it)
+     FA.Talents.Icon(t)              a talent's icon, or a question mark when the game has none yet
      FA.Talents.Toggle()             open or close the talent window
      FA.Talents.Loaded(name)         whether an ADDON_LOADED name is the talent UI's
      FA.Talents.Dump()               every talent by tree, row and column, with the positions and grid it came from and
@@ -145,8 +146,12 @@ local function nodeNameAndIcon(configID, node)
   if not def then return nil, nil end
   local name = def.overrideName or (def.spellID and C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(def.spellID))
   local icon = def.overrideIcon or (def.spellID and C_Spell and C_Spell.GetSpellTexture and C_Spell.GetSpellTexture(def.spellID))
-  return name, icon
+  return name, icon, def.spellID
 end
+
+--[[ A talent's icon for the strip: the game's, or a question mark while the game has none yet. ]]
+Talents.UNKNOWN_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
+function Talents.Icon(t) return t and t.icon or Talents.UNKNOWN_ICON end
 
 --[[ ---- the trait system (the Forever client) ---- ]]
 local function readTraits(configID)
@@ -175,9 +180,9 @@ local function readTraits(configID)
     local g, x, y = grid[n.tab], n.info.posX, n.info.posY
     local col, row = round((x - g.originX) / g.colStep) + 1, round((y - g.topY) / g.rowStep) + 1
     local cell = (row - 1) * 4 + (col - 1)
-    local name, icon = nodeNameAndIcon(configID, n.info)
+    local name, icon, spell = nodeNameAndIcon(configID, n.info)
     local talent = { tab = n.tab, cell = cell, row = row, col = col, name = name, icon = icon, rank = n.info.ranksPurchased or 0,
-      max = n.info.maxRanks, node = n.info.ID, x = x, y = y }
+      max = n.info.maxRanks, node = n.info.ID, x = x, y = y, spell = spell }
     local why, there = nil, out.cells[n.tab][cell]
     if col < 1 or col > 4 then why = "column " .. col .. ", outside the four"
     elseif row > 7 then why = "row " .. row .. ", below the seventh"

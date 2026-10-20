@@ -1199,14 +1199,36 @@ class Gear(unittest.TestCase):
 
 
 UI_STUB = r"""
--- Any frame: every method answers a new frame, except the few whose answers get used as numbers, text or flags.
-local ANSWERS = { GetFrameLevel = 1, IsShown = true, GetWidth = 400, GetText = "", GetChecked = true, GetID = 1 }
+-- Any frame: every method answers a new frame, except the few whose answers get used as numbers, text or flags. What the
+-- addon sets is kept for the tests to read: text, shown, size, alpha, vertex colour, texture, anchors, scripts, and the
+-- frames and regions a frame has (children, regions), so an overlay on a talent's button can be found.
+local ANSWERS = { GetFrameLevel = 1, GetWidth = 400, GetText = "", GetChecked = true, GetID = 1 }
 SHOWN, POPUPS, HOOKS = {}, {}, {}
-local function frame(name)
-  local f = { name = name }
+local frame
+local function keep(field) return function(self, ...) rawset(self, field, (...)) end end
+local function region(self)
+  local r = frame()
+  rawset(r, "parent", self)
+  self.regions[#self.regions + 1] = r
+  return r
+end
+frame = function(name)
+  local f = { name = name, children = {}, regions = {}, points = {} }
   return setmetatable(f, { __index = function(t, k)
     if ANSWERS[k] ~= nil then return function() return ANSWERS[k] end end
-    if k == "SetText" then return function(self, text) rawset(self, "text", text) end end
+    if k == "IsShown" then return function(self) return rawget(self, "shown") ~= false end end
+    if k == "SetText" then return keep("text") end
+    if k == "SetAlpha" then return keep("alpha") end
+    if k == "SetTexture" then return keep("texture") end
+    if k == "SetHeight" then return keep("height") end
+    if k == "SetWidth" then return keep("width") end
+    if k == "SetVertexColor" then return function(self, r, g, b) rawset(self, "color", { r, g, b }) end end
+    if k == "SetColorTexture" then return function(self, r, g, b) rawset(self, "texture", "color"); rawset(self, "color", { r, g, b }) end end
+    if k == "SetSize" then return function(self, w, h) rawset(self, "width", w); rawset(self, "height", h) end end
+    if k == "SetShown" then return function(self, on) rawset(self, "shown", on and true or false) end end
+    if k == "SetPoint" then return function(self, ...) self.points[#self.points + 1] = { ... } end end
+    if k == "ClearAllPoints" then return function(self) rawset(self, "points", {}) end end
+    if k == "CreateTexture" or k == "CreateFontString" then return region end
     if k == "Enable" then return function(self) rawset(self, "enabled", true) end end
     if k == "Disable" then return function(self) rawset(self, "enabled", false) end end
     if k == "Show" then return function(self) rawset(self, "shown", true) end end
@@ -1216,8 +1238,22 @@ local function frame(name)
     return function() return frame() end
   end })
 end
-CreateFrame = function(kind, name) local f = frame(name); if name then _G[name] = f end return f end
+CreateFrame = function(kind, name, parent)
+  local f = frame(name)
+  rawset(f, "kind", kind)
+  if parent then rawset(f, "parent", parent); parent.children[#parent.children + 1] = f end
+  if name then _G[name] = f end
+  return f
+end
 UIParent, GameTooltip, ChatFontNormal = frame("UIParent"), frame("GameTooltip"), frame()
+-- the tooltip keeps what was put in it: TIP = { owner, spell, text, lines = { ... }, shown }
+TIP = { lines = {} }
+GameTooltip.SetOwner = function(_, owner) TIP = { owner = owner, lines = {} } end
+GameTooltip.SetSpellByID = function(_, id) TIP.spell = id end
+GameTooltip.SetText = function(_, text) TIP.text = text end
+GameTooltip.AddLine = function(_, text) TIP.lines[#TIP.lines + 1] = text end
+GameTooltip.Show = function() TIP.shown = true end
+GameTooltip.Hide = function() TIP.shown = false end
 UISpecialFrames = {}
 tinsert = table.insert
 local hook = hooksecurefunc
@@ -1225,7 +1261,13 @@ hooksecurefunc = function(a, b, c) HOOKS[#HOOKS + 1] = c or b; return hook(a, b,
 StaticPopup_Show = function(which, text, _, data) POPUPS[#POPUPS + 1] = { which = which, text = text, data = data } end
 PlayerSpellsFrame = frame("PlayerSpellsFrame")
 PlayerSpellsFrame.TalentsFrame = frame("TalentsFrame")
-PlayerSpellsFrame.TalentsFrame.GetTalentButtonByNodeID = function(self, nodeID) LIT = nodeID; return frame() end
+-- the talent window's buttons are pooled: one a node, the same each time it's asked for. LIT is the node last asked for.
+BUTTONS = {}
+PlayerSpellsFrame.TalentsFrame.GetTalentButtonByNodeID = function(self, nodeID)
+  LIT = nodeID
+  BUTTONS[nodeID] = BUTTONS[nodeID] or frame()
+  return BUTTONS[nodeID]
+end
 Settings = { RegisterCanvasLayoutCategory = function() return frame() end, RegisterAddOnCategory = function() end, OpenToCategory = function() end }
 CharacterFrame = frame("CharacterFrame")
 ToggleCharacter = function() TOGGLED = (TOGGLED or 0) + 1 end
@@ -1247,7 +1289,7 @@ class UI(unittest.TestCase):
         L.run("FA.HookTalentFrame(); FA.HookCharacterFrame(); FA.SetupOptions()")
 
     def setUp(self):
-        L.run("RESET('traits'); POPUPS = {}; LIT = nil")
+        L.run("RESET('traits'); POPUPS = {}; LIT = nil; FA.Refresh()")   # the refresh puts out what a test left lit
 
     def panel(self, key):
         return L.eval("function(k) local p = ForeverArmouryTalentPanel; if k == 'status' then return p.status.text end "
@@ -1287,6 +1329,7 @@ class UI(unittest.TestCase):
 
     def test_the_build_list_scrolls_to_every_build(self):
         names = ["B%d" % n for n in range(1, 26)]
+        L.run("FA.char.buildsOpen = true")   # picking a build closes the list unless it was opened on purpose
         L.run("FA.ImportText('" + " ".join("FAT1-warrior-%s-01%02x" % (n, i) for i, n in enumerate(names)) + "')")
         self.assertEqual(L.eval("#FA.BuildsFor('warrior')"), 25)
         rows = lambda: [r for r in L.eval("function() local out = {} for i, r in ipairs(ForeverArmouryTalentPanel.rows) do out[i] = r.text.text end return out end")().values()]
@@ -1324,6 +1367,7 @@ class UI(unittest.TestCase):
         self.assertEqual(L.eval("ForeverArmouryTalentPanel.more.shown"), False)
 
     def test_an_eleventh_build_is_reachable(self):
+        L.run("FA.char.buildsOpen = true")
         L.run("FA.ImportText('" + " ".join("FAT1-warrior-B%d-01%02x" % (i, i) for i in range(1, 12)) + "')")
         self.assertEqual(L.eval("ForeverArmouryTalentPanel.rows[10].text.text"), "B10")
         L.run("FA.ScrollBuilds(1)")
@@ -1332,6 +1376,7 @@ class UI(unittest.TestCase):
         self.assertEqual(L.eval("FA.ActiveBuild().name"), "B11")
 
     def test_a_colour_escape_in_a_name_is_drawn_as_typed(self):
+        L.run("FA.char.buildsOpen = true")
         L.run("FA.ImportText('FAT1-warrior-A%7CcffFF0000Red%7Cr-" + GATED + "')")
         self.assertEqual(L.eval("FA.ActiveBuild().name"), "A|cffFF0000Red|r")
         self.assertEqual(L.eval("ForeverArmouryTalentPanel.rows[1].text.text"), "A||cffFF0000Red||r")
@@ -1344,6 +1389,7 @@ class UI(unittest.TestCase):
         self.assertEqual(L.eval("ForeverArmouryTalentPanel.rows[2].text.text"), "||Hplain||h")
 
     def test_an_unnamed_build_is_called_unnamed(self):
+        L.run("FA.char.buildsOpen = true")
         ok, said = L.eval("function(t) return FA.ImportText(t) end")("FAT1-warrior--" + GATED)
         self.assertIn("Following Unnamed.", said)
         self.assertEqual(L.eval("ForeverArmouryTalentPanel.rows[1].text.text"), "Unnamed")
@@ -1380,6 +1426,302 @@ class UI(unittest.TestCase):
         self.assertIn("2 points aren't in this build|r (Shield Specialization x2).", status)
         self.assertIn("Reset your talents at a class trainer", status)
         self.assertEqual(self.panel("apply")[1], False)
+
+    # ---- the strip of icons beside the talent window (#1562) and its hover (#1563)
+    def strip(self):
+        """What the strip shows, an icon a line: kind, talent and rank, then | and its level badge (@), label under it ([]), check (v), gold border and alpha."""
+        text = L.eval("""function()
+          local out = {}
+          for i, ic in ipairs(ForeverArmouryTalentStrip.icons) do
+            if ic.entry and ic.shown then
+              local e, rank = ic.entry, ic.rank.text or ''
+              local decor = {}
+              if ic.level.shown then decor[#decor + 1] = '@' .. ic.level.text end
+              if ic.label.shown then decor[#decor + 1] = '[' .. ic.label.text .. ']' end
+              if ic.check.shown then decor[#decor + 1] = 'v' end
+              if ic.edge.shown then decor[#decor + 1] = 'edge' end
+              if ic.tex.alpha ~= 1 then decor[#decor + 1] = 'a=' .. ic.tex.alpha end
+              out[#out + 1] = e.kind .. ' ' .. e.talent.name .. (rank ~= '' and (' ' .. rank) or '') .. '|' .. table.concat(decor, ' ')
+            end
+          end
+          return table.concat(out, '\\n')
+        end""")()
+        return text.split("\n") if text else []
+
+    def follow(self, level=60, ranks=()):
+        """Imports GATED, follows it, and sets the character to a level with ranks: (tree, index, rank) triples."""
+        L.run("FA.ImportText('FAT1-warrior-Arms-" + GATED + "'); PLAYER.level = %d" % level)
+        for tab, index, rank in ranks:
+            L.run("TREE[%d][%d][4] = %d" % (tab, index, rank))
+        L.run("FA.Talents.Forget(); FA.Refresh()")
+
+    MID = ((1, 1, 5), (1, 3, 2))   # Deflection 5/5, Tactical Mastery 2/5: seven points of the build's thirteen
+
+    def more(self):
+        return L.eval("ForeverArmouryTalentStrip.more.shown"), L.eval("ForeverArmouryTalentStrip.more.count")
+
+    def test_no_strip_without_a_build(self):
+        L.run("FA.Refresh()")
+        self.assertFalse(L.eval("ForeverArmouryTalentStrip.shown"))
+        L.run("FA.ImportText('FAT1-warrior-Arms-" + GATED + " FAT1-warrior-Fury-0101')")
+        self.assertIsNone(L.eval("FA.ActiveBuild()"))   # two builds: none followed yet
+        self.assertFalse(L.eval("ForeverArmouryTalentStrip.shown"))
+        self.assertTrue(L.eval("ForeverArmouryTalentPanel.points[1][2] == PlayerSpellsFrame"))   # the panel is against the window
+        L.run("FA.SetActive(FA.BuildsFor('warrior')[1].id); FA.Refresh()")
+        self.assertTrue(L.eval("ForeverArmouryTalentStrip.shown"))
+        # the strip is 48 wide against the window's right edge, and the panel against the strip's
+        self.assertEqual(L.eval("ForeverArmouryTalentStrip.width"), 48)
+        self.assertEqual(L.eval("ForeverArmouryTalentStrip.points[1][2] == PlayerSpellsFrame and ForeverArmouryTalentStrip.points[1][3]"), "TOPRIGHT")
+        self.assertEqual(L.eval("ForeverArmouryTalentStrip.points[2][2] == PlayerSpellsFrame and ForeverArmouryTalentStrip.points[2][3]"), "BOTTOMRIGHT")
+        self.assertTrue(L.eval("ForeverArmouryTalentPanel.points[1][2] == ForeverArmouryTalentStrip"))
+        L.run("FA.SetActive(nil); FA.Refresh()")
+        self.assertFalse(L.eval("ForeverArmouryTalentStrip.shown"))
+        self.assertEqual(L.eval("#ForeverArmouryTalentPanel.points"), 1)   # moved, not added to
+        self.assertTrue(L.eval("ForeverArmouryTalentPanel.points[1][2] == PlayerSpellsFrame"))
+
+    def test_strip_at_no_points(self):
+        self.follow()
+        self.assertEqual(self.strip(), [
+            "next Deflection 1/5|[Now] edge",
+            "coming Deflection 2/5|@11", "coming Deflection 3/5|@12", "coming Deflection 4/5|@13",
+            "coming Deflection 5/5|@14", "coming Tactical Mastery 1/5|@15"])
+        self.assertEqual(self.more(), (True, 7))   # thirteen points: one next, five coming, seven more
+        # the icon and name are the game's
+        self.assertEqual(L.eval("ForeverArmouryTalentStrip.icons[1].tex.texture"), L.eval("NODE(1, 1) * 10"))
+        self.assertTrue(L.eval("ForeverArmouryTalentStrip.icons[1].glow.shown"))
+        self.assertFalse(L.eval("ForeverArmouryTalentStrip.icons[2].glow.shown"))
+
+    def test_strip_mid_build(self):
+        self.follow(16, self.MID)
+        self.assertEqual(self.strip(), [
+            "taken Deflection 5/5|v a=0.45", "taken Tactical Mastery 1/5|v a=0.45", "taken Tactical Mastery 2/5|v a=0.45",
+            "next Tactical Mastery 3/5|[L17] edge",   # the level isn't here yet: its level, not Now
+            "coming Tactical Mastery 4/5|@18", "coming Tactical Mastery 5/5|@19", "coming Sweeping Strikes|@20",
+            "coming Cruelty 1/5|@21", "coming Cruelty 2/5|@22"])   # a talent with one rank has no r/m
+        self.assertEqual(self.more(), (False, 0))
+        # the level comes: Now
+        L.run("PLAYER.level = 17; FA.Refresh()")
+        self.assertIn("next Tactical Mastery 3/5|[Now] edge", self.strip())
+
+    def test_strip_of_a_finished_build(self):
+        self.follow(60, ((1, 1, 5), (1, 3, 5), (1, 5, 1), (2, 2, 2)))
+        self.assertEqual(self.strip(), ["taken Sweeping Strikes|v a=0.45", "taken Cruelty 1/5|v a=0.45", "taken Cruelty 2/5|v a=0.45"])
+        self.assertEqual(self.more(), (False, 0))
+        self.assertIn("Every point of this build is spent.", self.panel("status"))
+        self.assertFalse(any("Now" in line for line in self.strip()))
+
+    def test_strip_of_a_build_off_its_order(self):
+        self.follow(60, ((1, 1, 2), (3, 4, 1)))   # Deflection 2, and Last Stand, which the build doesn't have
+        lines = self.strip()
+        self.assertEqual(lines[:3], ["taken Deflection 1/5|v a=0.45", "taken Deflection 2/5|v a=0.45", "next Deflection 3/5|[L12] edge"])
+        self.assertEqual(len(lines), 8)   # two taken, the next, five coming
+        self.assertFalse(any("Last Stand" in line for line in lines))
+        self.assertIn("1 point isn't in this build", self.panel("status"))
+
+    def test_the_strip_follows_the_character(self):
+        self.follow(12)
+        self.assertEqual(self.strip()[0], "next Deflection 1/5|[Now] edge")
+        L.run("FA.AskApply(); StaticPopupDialogs.FOREVERARMOURY_APPLY.OnAccept(nil, POPUPS[1].data)")
+        self.assertEqual(L.eval("FA.Talents.Spent()"), 3)
+        L.run("FLUSH(); FA.Refresh()")
+        self.assertEqual(self.strip()[:4], ["taken Deflection 1/5|v a=0.45", "taken Deflection 2/5|v a=0.45", "taken Deflection 3/5|v a=0.45",
+                                            "next Deflection 4/5|[L13] edge"])
+        # a level up and an event: one redraw a frame, with the new level
+        L.run("PLAYER.level = 13; EVENT('PLAYER_LEVEL_UP'); FLUSH()")
+        self.assertEqual(self.strip()[3], "next Deflection 4/5|[Now] edge")
+        # the other spec: the strip follows the one that's active
+        L.run("SPEC.groups = 2; OTHER[NODE(1, 1)] = 5; SPEC.active = 2; EVENT('ACTIVE_TALENT_GROUP_CHANGED'); FLUSH()")
+        self.assertEqual(self.strip()[0:3], ["taken Deflection 3/5|v a=0.45", "taken Deflection 4/5|v a=0.45", "taken Deflection 5/5|v a=0.45"])
+        self.assertEqual(self.strip()[3], "next Tactical Mastery 1/5|[L15] edge")   # level 13: its point is at 15
+
+    def test_the_strip_counts_are_settings(self):
+        self.assertEqual(L.eval("FA.db.strip.past"), 3)
+        self.assertEqual(L.eval("FA.db.strip.coming"), 5)
+        self.follow(16, self.MID)
+        L.run("FA.db.strip.past, FA.db.strip.coming = 1, 2; FA.Refresh()")
+        self.assertEqual([line.split("|")[0] for line in self.strip()], ["taken Tactical Mastery 2/5", "next Tactical Mastery 3/5", "coming Tactical Mastery 4/5", "coming Tactical Mastery 5/5"])
+        self.assertEqual(self.more(), (True, 3))
+        L.run("FA.db.strip.past, FA.db.strip.coming = 0, 0; FA.Refresh()")
+        self.assertEqual([line.split("|")[0] for line in self.strip()], ["next Tactical Mastery 3/5"])
+        self.assertEqual(self.more(), (True, 5))
+        # more than the strip has room for is the most it has, and fewer than none is none
+        L.run("FA.db.strip.past, FA.db.strip.coming = 99, -4; FA.Refresh()")
+        self.assertEqual([line.split("|")[0] for line in self.strip()], ["taken Deflection 3/5", "taken Deflection 4/5", "taken Deflection 5/5", "taken Tactical Mastery 1/5", "taken Tactical Mastery 2/5", "next Tactical Mastery 3/5"])
+        L.run("FA.db.strip.past, FA.db.strip.coming = 99, 99; FA.Refresh()")
+        self.assertEqual(len(self.strip()), 11)   # five taken, the next, and the five the build has left
+        self.assertEqual((L.eval("FA.StripCount('past')"), L.eval("FA.StripCount('coming')")), (5, 8))
+        # a saved value that isn't a number is replaced by the default at load; one that is is kept
+        L.run("ForeverArmouryDB = { strip = { past = 'x', coming = 2 } }; FA.Init()")
+        self.assertEqual((L.eval("FA.db.strip.past"), L.eval("FA.db.strip.coming")), (3, 2))
+        L.run("ForeverArmouryDB = { strip = 7 }; FA.Init()")
+        self.assertEqual((L.eval("FA.db.strip.past"), L.eval("FA.db.strip.coming")), (3, 5))
+
+    def test_the_settings_page_sets_the_counts(self):
+        self.follow(16, self.MID)
+        L.run("local s = ForeverArmouryStripPast; s.scripts.OnValueChanged(s, 1); s = ForeverArmouryStripComing; s.scripts.OnValueChanged(s, 2)")
+        self.assertEqual((L.eval("FA.db.strip.past"), L.eval("FA.db.strip.coming")), (1, 2))
+        self.assertEqual(len(self.strip()), 4)
+        self.assertEqual(L.eval("ForeverArmouryStripPast.kind"), "Slider")
+
+    def test_an_icon_the_game_has_not_given_is_a_question_mark(self):
+        L.run("DEFS[NODE(1, 1)] = { overrideName = 'Plain' }")   # a definition with a name and neither icon nor spell
+        self.follow()
+        self.assertEqual(L.eval("ForeverArmouryTalentStrip.icons[1].tex.texture"), "Interface\\Icons\\INV_Misc_QuestionMark")
+        self.assertEqual(L.eval("ForeverArmouryTalentStrip.icons[6].tex.texture"), L.eval("NODE(1, 3) * 10"))   # the others have theirs
+        L.run("local ic = ForeverArmouryTalentStrip.icons[1]; ic.scripts.OnEnter(ic)")
+        self.assertEqual((L.eval("TIP.text"), L.eval("TIP.spell")), ("Plain", None))   # no spell: the name
+        L.run("DEFS[NODE(1, 1)] = nil; FA.Talents.Forget(); FA.Refresh(); local ic = ForeverArmouryTalentStrip.icons[1]; ic.scripts.OnEnter(ic)")
+        self.assertEqual(L.eval("TIP.text"), "Unknown talent")
+
+    def icon(self, kind, name, rank):
+        for i, line in enumerate(self.strip(), 1):
+            if line.split("|")[0] == "%s %s %s" % (kind, name, rank):
+                return i
+        self.fail("no %s %s %s in %s" % (kind, name, rank, self.strip()))
+
+    def hover(self, i, event="OnEnter"):
+        L.run("local ic = ForeverArmouryTalentStrip.icons[%d]; ic.scripts.%s(ic)" % (i, event))
+
+    def overlays(self, tab, index):
+        """The addon's overlays on a talent's button in the tree: "glow=true hover=false", the next-talent glow and the hover's."""
+        return L.eval("""function(node)
+          local b = BUTTONS[node]; local out = {}
+          for _, c in ipairs(b and b.children or {}) do out[#out + 1] = (rawget(c.regions[1], 'color') and 'hover=' or 'glow=') .. tostring(c.shown) end
+          table.sort(out)
+          return table.concat(out, ' ')
+        end""")(L.eval("NODE(%d, %d)" % (tab, index)))
+
+    def test_hover_lights_the_talent_and_leaves_the_next_ones_glow(self):
+        self.follow(16, self.MID)
+        self.assertEqual(self.overlays(1, 3), "glow=true")        # Tactical Mastery is next
+        self.assertEqual(self.overlays(2, 2), "")                  # Cruelty has nothing
+        self.hover(self.icon("coming", "Cruelty", "1/5"))
+        self.assertEqual(self.overlays(2, 2), "hover=true")
+        self.assertEqual(self.overlays(1, 3), "glow=true")        # the next stays lit
+        # the overlay is a blue of the addon's own, not the glow's
+        self.assertEqual(L.eval("BUTTONS[NODE(2, 2)].children[1].regions[1].color[3]"), 1)
+        self.hover(self.icon("coming", "Cruelty", "1/5"), "OnLeave")
+        self.assertEqual(self.overlays(2, 2), "hover=false")
+        self.assertEqual(self.overlays(1, 3), "glow=true")
+        # the next one's own icon lights its button over the glow, and leaving leaves the glow
+        self.hover(self.icon("next", "Tactical Mastery", "3/5"))
+        self.assertEqual(self.overlays(1, 3), "glow=true hover=true")
+        self.hover(self.icon("next", "Tactical Mastery", "3/5"), "OnLeave")
+        self.assertEqual(self.overlays(1, 3), "glow=true hover=false")
+        # one overlay at a time
+        self.hover(self.icon("taken", "Deflection", "5/5"))
+        self.hover(self.icon("coming", "Cruelty", "2/5"))
+        self.assertEqual((self.overlays(1, 1), self.overlays(2, 2)), ("glow=false hover=false", "hover=true"))   # Deflection had the glow once, in an earlier test
+
+    def test_hover_writes_nothing_on_the_games_button(self):
+        self.follow(16, self.MID)
+        self.hover(self.icon("coming", "Cruelty", "1/5"))
+        self.hover(self.icon("next", "Tactical Mastery", "3/5"))
+        # the button has only what the mock gave it, and our overlay is a child frame of ours
+        keys = L.eval("function() local out = {} for k in pairs(BUTTONS[NODE(2, 2)]) do out[#out + 1] = k end table.sort(out) return table.concat(out, ',') end")()
+        self.assertEqual(keys, "children,points,regions")
+        self.assertTrue(L.eval("BUTTONS[NODE(2, 2)].children[1].parent == BUTTONS[NODE(2, 2)]"))
+
+    def test_hover_shows_the_talents_tooltip(self):
+        self.follow(16, self.MID)
+        i = self.icon("coming", "Cruelty", "1/5")
+        self.hover(i)
+        self.assertTrue(L.eval("TIP.owner == ForeverArmouryTalentStrip.icons[%d]" % i))
+        self.assertEqual(L.eval("TIP.spell"), L.eval("NODE(2, 2) * 10"))   # the trait definition's spell
+        self.assertEqual(list(L.eval("TIP.lines").values()), ["Level 21 · Rank 1 of 5"])
+        self.assertTrue(L.eval("TIP.shown"))
+        self.hover(i, "OnLeave")
+        self.assertFalse(L.eval("TIP.shown"))
+        # a taken rank says so
+        self.hover(self.icon("taken", "Tactical Mastery", "2/5"))
+        self.assertEqual(list(L.eval("TIP.lines").values()), ["Level 16 · Rank 2 of 5", "Taken"])
+        self.assertEqual(L.eval("TIP.spell"), L.eval("NODE(1, 3) * 10"))
+
+    def test_hover_survives_a_redraw_and_ends_with_the_strip(self):
+        self.follow(16, self.MID)
+        self.hover(self.icon("coming", "Cruelty", "1/5"))
+        L.run("FA.Refresh()")   # the game redraws its window while the mouse is on the icon
+        self.assertEqual(self.overlays(2, 2), "hover=true")
+        self.assertTrue(L.eval("TIP.shown"))
+        L.run("FA.SetActive(nil); FA.Refresh()")   # the build is let go with the mouse still there
+        self.assertEqual(self.overlays(2, 2), "hover=false")
+        self.assertFalse(L.eval("TIP.shown"))
+        self.assertFalse(L.eval("ForeverArmouryTalentStrip.shown"))
+        self.follow(16, self.MID)
+        L.run("FA.SetActive(FA.BuildsFor('warrior')[1].id); FA.Refresh()")
+        self.hover(self.icon("coming", "Cruelty", "1/5"))
+        L.run("FA.SetPart('plan', false)")
+        self.assertEqual(self.overlays(2, 2), "hover=false")
+        L.run("FA.SetPart('plan', true)")
+
+    # ---- the panel's build list as a section
+    def header(self):
+        return L.eval("function() local h = ForeverArmouryTalentPanel.header; return h.text.text, h.sign.texture end")()
+
+    def listed(self):
+        return L.eval("function() local n = 0 for _, r in ipairs(ForeverArmouryTalentPanel.rows) do if r.shown then n = n + 1 end end return n end")()
+
+    def height(self):
+        return L.eval("ForeverArmouryTalentPanel.height")
+
+    PLUS, MINUS = "Interface\\Buttons\\UI-PlusButton-Up", "Interface\\Buttons\\UI-MinusButton-Up"
+
+    def test_the_build_list_is_open_until_a_build_is_followed(self):
+        L.run("FA.Refresh()")
+        self.assertEqual(self.header(), ("Builds (0)", self.MINUS))
+        L.run("FA.ImportText('FAT1-warrior-Arms-" + GATED + " FAT1-warrior-Fury-0101 FAT1-warrior-Prot-0a')")
+        self.assertEqual(self.header(), ("Builds (3)", self.MINUS))   # a new user sees the list
+        self.assertEqual(self.listed(), 3)
+        self.assertEqual(self.height(), 152 + 3 * 21 + 50)
+        # picking one closes it, to the followed build's name
+        L.run("local r = ForeverArmouryTalentPanel.rows[2]; r.scripts.OnClick(r)")
+        self.assertEqual(L.eval("FA.ActiveBuild().name"), "Fury")
+        self.assertEqual(self.header(), ("Fury", self.PLUS))
+        self.assertEqual(self.listed(), 0)
+        self.assertEqual(self.height(), 202)
+        self.assertFalse(L.eval("ForeverArmouryTalentPanel.up.shown"))
+        self.assertIn("Next:", self.panel("status"))   # the status and Apply stay
+        self.assertEqual(self.panel("apply")[0], "Apply 2 points")
+
+    def test_the_header_opens_and_closes_the_list_for_the_character(self):
+        L.run("FA.ImportText('FAT1-warrior-Arms-" + GATED + " FAT1-warrior-Fury-0101')")
+        L.run("FA.SetActive(FA.BuildsFor('warrior')[1].id); FA.Refresh()")
+        self.assertEqual((self.header(), self.listed()), (("Arms", self.PLUS), 0))
+        self.assertIsNone(L.eval("FA.char.buildsOpen"))   # nobody has chosen: the default is derived
+        press = lambda: L.run("local h = ForeverArmouryTalentPanel.header; h.scripts.OnClick(h)")
+        press()
+        self.assertEqual((self.header(), self.listed(), self.height()), (("Builds (2)", self.MINUS), 2, 152 + 2 * 21 + 50))
+        self.assertTrue(L.eval("FA.char.buildsOpen"))
+        # open on purpose, it stays open when another build is picked
+        L.run("local r = ForeverArmouryTalentPanel.rows[2]; r.scripts.OnClick(r)")
+        self.assertEqual((self.header()[0], self.listed()), ("Builds (2)", 2))
+        press()
+        self.assertEqual((self.header(), self.listed()), (("Fury", self.PLUS), 0))
+        self.assertEqual(L.eval("FA.char.buildsOpen"), False)
+        # closed on purpose, it stays closed with no build followed: the header says how many there are
+        L.run("FA.SetActive(nil); FA.Refresh()")
+        self.assertEqual((self.header(), self.listed()), (("Builds (2)", self.PLUS), 0))
+        # another character has its own
+        L.run("ForeverArmouryCharDB = {}; FA.char = ForeverArmouryCharDB; FA.Refresh()")
+        self.assertEqual((self.header(), self.listed()), (("Builds (2)", self.MINUS), 2))
+
+    def test_the_collapsed_header_names_the_build_as_typed(self):
+        L.run("FA.ImportText('FAT1-warrior-A%7CcffFF0000Red%7Cr-" + GATED + " FAT1-warrior--0a')")   # one named with a colour escape, one not at all
+        L.run("FA.SetActive(FA.BuildsFor('warrior')[1].id); FA.Refresh()")
+        self.assertEqual(self.header()[0], "A||cffFF0000Red||r")
+        L.run("FA.SetActive(FA.BuildsFor('warrior')[2].id); FA.Refresh()")
+        self.assertEqual(self.header()[0], "Unnamed")
+
+    def test_a_long_list_collapses_with_its_arrows(self):
+        L.run("FA.ImportText('" + " ".join("FAT1-warrior-B%d-01%02x" % (n, n) for n in range(1, 26)) + "')")
+        self.assertEqual((self.header()[0], self.listed(), self.height()), ("Builds (25)", 10, 152 + 210 + 22 + 50))
+        self.assertTrue(L.eval("ForeverArmouryTalentPanel.down.shown"))
+        L.run("local r = ForeverArmouryTalentPanel.rows[3]; r.scripts.OnClick(r)")
+        self.assertEqual((self.header()[0], self.listed(), self.height()), ("B3", 0, 202))
+        self.assertFalse(L.eval("ForeverArmouryTalentPanel.down.shown"))
+        self.assertFalse(L.eval("ForeverArmouryTalentPanel.more.shown"))
+        L.run("local h = ForeverArmouryTalentPanel.header; h.scripts.OnClick(h)")
+        self.assertEqual((self.listed(), L.eval("ForeverArmouryTalentPanel.down.shown")), (10, True))
 
     def test_import_errors_and_export(self):
         ok, err = L.eval("function(t) return FA.ImportText(t) end")("nonsense")

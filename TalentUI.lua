@@ -1,7 +1,8 @@
---[[ The level plan part's windows: a panel beside the talent window listing the character's builds, with the active
-     one's next talent named and lit in the trees; the import box, where codes are pasted in and copied out; and the
-     addon's settings page. Talents.lua says which frame the talent window is and which button a talent has, so
-     nothing here depends on the client's version of it. ]]
+--[[ The level plan part's windows: a strip of icons beside the talent window showing the followed build's talents in its
+     order (the last few taken, the next, the ones coming), and a panel beside that listing the character's builds, with
+     the active one's next talent named and lit in the trees; the import box, where codes are pasted in and copied out;
+     and the addon's settings page. Talents.lua says which frame the talent window is and which button a talent has,
+     so nothing here depends on the client's version of it. ]]
 
 local _, FA = ...
 local Talents = FA.Talents
@@ -10,42 +11,222 @@ local BACKDROP = { bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background", e
   tile = true, tileSize = 32, edgeSize = 32, insets = { left = 11, right = 12, top = 12, bottom = 11 } }
 local TEMPLATE = BackdropTemplateMixin and "BackdropTemplate" or nil
 local ROWS = 10   -- builds shown at once; the list scrolls past them
-local panel, importBox, options, hooked
+local ICON = 34     -- the strip's icons
+local STRIP_W = 48
+local HEADER_Y, LIST_Y = 132, 156   -- where the panel's builds header and its list start
+local panel, strip, window, importBox, options, hooked
+local panelBy   -- what the panel is anchored to: the strip, or the window when there is no strip
 local offset = 0   -- how many builds are scrolled off the top of the list
 local glows = {}   -- talent button -> its highlight
+local hovers = {}  -- talent button -> the highlight of the strip icon under the mouse
+local hovering     -- the strip icon under the mouse
 
---[[ ---- the next-talent highlight ---- ]]
-local function lightTalent(t)
-  for _, g in pairs(glows) do g:Hide() end
+--[[ ---- the highlights in the trees ---- ]]
+--[[ A frame of ours over a talent's button, kept in a set by button: the client's talent frame pools and reuses its
+     buttons, so nothing is written on them. Lights the talent's own and hides the rest of the set; r, g, b tint it. ]]
+local function lightOn(set, t, r, g, b, pulses)
+  for _, o in pairs(set) do o.frame:Hide() end
   local button = t and Talents.Button(t)
   if not button or not button:IsShown() then return end
-  local g = glows[button]
-  if not g then
-    g = CreateFrame("Frame", nil, button)
-    g:SetAllPoints(button)
-    g:SetFrameLevel(button:GetFrameLevel() + 5)
-    local tex = g:CreateTexture(nil, "OVERLAY")
+  local o = set[button]
+  if not o then
+    local f = CreateFrame("Frame", nil, button)
+    f:SetAllPoints(button)
+    f:SetFrameLevel(button:GetFrameLevel() + 5)
+    local tex = f:CreateTexture(nil, "OVERLAY")
     tex:SetTexture("Interface\\Buttons\\CheckButtonHilight")
     tex:SetBlendMode("ADD")
+    if r then tex:SetVertexColor(r, g, b) end
     tex:SetPoint("TOPLEFT", -4, 4)
     tex:SetPoint("BOTTOMRIGHT", 4, -4)
-    local pulse = g:CreateAnimationGroup()
-    pulse:SetLooping("BOUNCE")
-    local a = pulse:CreateAnimation("Alpha")
-    a:SetFromAlpha(1); a:SetToAlpha(0.35); a:SetDuration(0.7)
-    g.pulse = pulse
-    glows[button] = g
+    o = { frame = f }
+    if pulses then
+      o.pulse = f:CreateAnimationGroup()
+      o.pulse:SetLooping("BOUNCE")
+      local a = o.pulse:CreateAnimation("Alpha")
+      a:SetFromAlpha(1); a:SetToAlpha(0.35); a:SetDuration(0.7)
+    end
+    set[button] = o
   end
-  g:Show()
-  g.pulse:Play()
+  o.frame:Show()
+  if o.pulse then o.pulse:Play() end
+end
+
+--[[ The next talent: the game's own glow, pulsing. ]]
+local function lightTalent(t) lightOn(glows, t, nil, nil, nil, true) end
+--[[ The talent of the strip icon under the mouse, in blue so it reads beside the next talent's glow, which stays. ]]
+local function lightHover(t) lightOn(hovers, t, 0.3, 0.7, 1) end
+--[[ The strip is going away, or the window is: no icon is under the mouse any more. ]]
+local function dropHover()
+  if hovering then GameTooltip:Hide() end
+  hovering = nil
+  lightHover(nil)
+end
+
+--[[ ---- the strip of icons beside the talent window ---- ]]
+--[[ The panel's border at half the weight, so a 34 px icon fits a 48 px strip. ]]
+local STRIP_BACKDROP = { bgFile = BACKDROP.bgFile, edgeFile = BACKDROP.edgeFile, tile = true, tileSize = 32, edgeSize = 16,
+  insets = { left = 5, right = 5, top = 5, bottom = 5 } }
+
+--[[ An icon's tooltip: the talent's spell as the game shows it (its name when the game gave no spell), then its level and
+     rank, and whether the rank is taken. ]]
+local function showTip(icon)
+  local e = icon.entry
+  if not e then return end
+  local t = e.talent
+  GameTooltip:SetOwner(icon, "ANCHOR_RIGHT")
+  if t.spell then GameTooltip:SetSpellByID(t.spell) else GameTooltip:SetText(t.name or "Unknown talent", 1, 1, 1) end
+  GameTooltip:AddLine("Level " .. e.level .. " \194\183 Rank " .. e.rank .. " of " .. (t.max or "?"), 1, 0.82, 0)
+  if e.kind == "taken" then GameTooltip:AddLine("Taken", 0.3, 1, 0.3) end
+  GameTooltip:Show()
+end
+
+local function makeIcon()
+  local icon = CreateFrame("Button", nil, strip)
+  icon:SetSize(ICON, ICON)
+  icon.edge = icon:CreateTexture(nil, "BACKGROUND")   -- the next one's gold border
+  icon.edge:SetColorTexture(1, 0.82, 0, 1)
+  icon.edge:SetPoint("TOPLEFT", -2, 2)
+  icon.edge:SetPoint("BOTTOMRIGHT", 2, -2)
+  icon.tex = icon:CreateTexture(nil, "ARTWORK")
+  icon.tex:SetAllPoints(icon)
+  icon.glow = icon:CreateTexture(nil, "OVERLAY")   -- and the glow lightTalent puts on its button
+  icon.glow:SetTexture("Interface\\Buttons\\CheckButtonHilight")
+  icon.glow:SetBlendMode("ADD")
+  icon.glow:SetPoint("TOPLEFT", -4, 4)
+  icon.glow:SetPoint("BOTTOMRIGHT", 4, -4)
+  icon.check = icon:CreateTexture(nil, "OVERLAY")
+  icon.check:SetTexture("Interface\\RaidFrame\\ReadyCheck-Ready")
+  icon.check:SetSize(16, 16)
+  icon.check:SetPoint("TOPRIGHT", 3, 3)
+  icon.rank = icon:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  icon.rank:SetPoint("TOPLEFT", 2, -2)
+  icon.rank:SetShadowOffset(1, -1)
+  icon.levelBg = icon:CreateTexture(nil, "ARTWORK", nil, 2)   -- the level a coming point is due in
+  icon.levelBg:SetColorTexture(0, 0, 0, 0.7)
+  icon.levelBg:SetSize(18, 12)
+  icon.levelBg:SetPoint("BOTTOMRIGHT")
+  icon.level = icon:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  icon.level:SetPoint("CENTER", icon.levelBg)
+  icon.label = icon:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")   -- "Now" or "L25", under the next one
+  icon.label:SetPoint("TOP", icon, "BOTTOM", 0, -1)
+  icon:SetScript("OnEnter", function(self)
+    if not self.entry then return end
+    hovering = self
+    lightHover(self.entry.talent)
+    showTip(self)
+  end)
+  icon:SetScript("OnLeave", function()
+    hovering = nil
+    lightHover(nil)
+    GameTooltip:Hide()
+  end)
+  --[[ Clicking the next icon is forever-armoury#1564, which waits on a decision: its OnClick would go here. ]]
+  return icon
+end
+
+local function makeStrip()
+  strip = CreateFrame("Frame", "ForeverArmouryTalentStrip", window, TEMPLATE)
+  strip:SetWidth(STRIP_W)
+  strip:SetPoint("TOPLEFT", window, "TOPRIGHT", -2, 0)
+  strip:SetPoint("BOTTOMLEFT", window, "BOTTOMRIGHT", -2, 0)
+  strip:SetBackdrop(STRIP_BACKDROP)
+  strip:SetFrameStrata("HIGH")
+  strip:SetClampedToScreen(true)
+  strip.icons = {}
+  strip.more = CreateFrame("Frame", nil, strip)   -- three dots, drawn here since the font may not have a vertical ellipsis
+  strip.more:SetSize(ICON, 16)
+  strip.more:EnableMouse(true)
+  for i = 1, 3 do
+    local dot = strip.more:CreateTexture(nil, "ARTWORK")
+    dot:SetColorTexture(0.8, 0.8, 0.8, 1)
+    dot:SetSize(3, 3)
+    dot:SetPoint("TOP", 0, -2 - (i - 1) * 5)
+  end
+  strip.more:SetScript("OnEnter", function(self)
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    GameTooltip:SetText(self.count .. (self.count == 1 and " more point" or " more points"), 1, 1, 1)
+    GameTooltip:Show()
+  end)
+  strip.more:SetScript("OnLeave", function() GameTooltip:Hide() end)
+end
+
+--[[ The panel sits against the strip while there is one to show, else against the window. ]]
+local function anchorPanel(by)
+  if panelBy == by then return end
+  panelBy = by
+  panel:ClearAllPoints()
+  if window == UIParent then panel:SetPoint("CENTER") else panel:SetPoint("TOPLEFT", by, "TOPRIGHT", -2, -20) end
+end
+
+--[[ The strip for a build's progress (FA.Progress's answer, nil without a build to show): hidden without one, else an
+     icon for each point FA.StripPlan names, top to bottom. The icon under the mouse keeps its highlight and tooltip
+     through the redraw. ]]
+local function refreshStrip(p)
+  if not strip then return end
+  local entries, more
+  if p then entries, more = FA.StripPlan(p, FA.StripCount("past"), FA.StripCount("coming")) end
+  if not entries or #entries == 0 then
+    strip:Hide()
+    anchorPanel(window)
+    dropHover()
+    return
+  end
+  strip:Show()
+  anchorPanel(strip)
+  local y = 12
+  for i, e in ipairs(entries) do
+    local icon = strip.icons[i]
+    if not icon then icon = makeIcon(); strip.icons[i] = icon end
+    local t = e.talent
+    icon.entry = e
+    icon.tex:SetTexture(Talents.Icon(t))
+    icon.tex:SetAlpha(e.kind == "taken" and 0.45 or 1)
+    icon.check:SetShown(e.kind == "taken")
+    icon.edge:SetShown(e.kind == "next")
+    icon.glow:SetShown(e.kind == "next")
+    icon.rank:SetText((t.max or 1) > 1 and (e.rank .. "/" .. t.max) or "")
+    icon.levelBg:SetShown(e.kind == "coming")
+    icon.level:SetShown(e.kind == "coming")
+    icon.level:SetText(e.kind == "coming" and e.level or "")
+    icon.label:SetShown(e.kind == "next")
+    icon.label:SetText(e.kind == "next" and (e.now and "Now" or ("L" .. e.level)) or "")
+    if e.kind == "coming" and entries[i - 1].kind ~= "coming" then y = y + 8 end   -- a gap after the next one
+    icon:ClearAllPoints()
+    icon:SetPoint("TOP", strip, "TOP", 0, -y)
+    icon:Show()
+    y = y + ICON + 4 + (e.kind == "next" and 12 or 0)
+  end
+  for i = #entries + 1, #strip.icons do
+    strip.icons[i].entry = false
+    strip.icons[i]:Hide()
+  end
+  strip.more.count = more
+  strip.more:SetShown(more > 0)
+  strip.more:ClearAllPoints()
+  strip.more:SetPoint("TOP", strip, "TOP", 0, -y)
+  if hovering and hovering.entry then
+    lightHover(hovering.entry.talent)
+    showTip(hovering)
+  else
+    dropHover()
+  end
 end
 
 --[[ ---- the panel beside the talent window ---- ]]
+--[[ Whether the panel's build list is open: as the character left it, else open until it follows a build. ]]
+local function buildsOpen(active)
+  local open = FA.char.buildsOpen
+  if open == nil then return active == nil end
+  return open
+end
+
 local function makePanel()
-  local window = Talents.Window() or UIParent
+  window = Talents.Window() or UIParent
+  if window ~= UIParent then makeStrip() end
   panel = CreateFrame("Frame", "ForeverArmouryTalentPanel", window, TEMPLATE)
   panel:SetSize(210, 410)
-  if Talents.Window() then panel:SetPoint("TOPLEFT", window, "TOPRIGHT", -2, -20) else panel:SetPoint("CENTER") end
+  anchorPanel(window)
   panel:SetBackdrop(BACKDROP)
   panel:SetFrameStrata("HIGH")
   panel:SetClampedToScreen(true)
@@ -76,11 +257,31 @@ local function makePanel()
   panel.apply:SetScript("OnLeave", function() GameTooltip:Hide() end)
   panel.apply:SetMotionScriptsWhileDisabled(true)
 
+  --[[ The builds are a section: a header row that opens and closes the list, and says which build is followed when it's closed. ]]
+  local header = CreateFrame("Button", nil, panel)
+  header:SetSize(178, 20)
+  header:SetPoint("TOPLEFT", 16, -HEADER_Y)
+  header:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+  header:GetHighlightTexture():SetBlendMode("ADD")
+  header.sign = header:CreateTexture(nil, "ARTWORK")
+  header.sign:SetSize(14, 14)
+  header.sign:SetPoint("LEFT", 4, 0)
+  header.text = header:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  header.text:SetPoint("LEFT", 24, 0)
+  header.text:SetPoint("RIGHT", -4, 0)
+  header.text:SetJustifyH("LEFT")
+  header.text:SetWordWrap(false)
+  header:SetScript("OnClick", function()
+    FA.char.buildsOpen = not buildsOpen(FA.ActiveBuild())
+    FA.Refresh()
+  end)
+  panel.header = header
+
   panel.rows = {}
   for i = 1, ROWS do
     local row = CreateFrame("Button", nil, panel)
     row:SetSize(158, 20)
-    row:SetPoint("TOPLEFT", 16, -132 - (i - 1) * 21)
+    row:SetPoint("TOPLEFT", 16, -LIST_Y - (i - 1) * 21)
     row.text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     row.text:SetPoint("LEFT", 4, 0)
     row.text:SetPoint("RIGHT", -4, 0)
@@ -110,7 +311,7 @@ local function makePanel()
   --[[ More builds than rows: an arrow pair under the list (and the mouse wheel over the panel) moves it. ]]
   panel.up = CreateFrame("Button", nil, panel, "UIPanelScrollUpButtonTemplate")
   panel.up:SetSize(18, 18)
-  panel.up:SetPoint("TOPLEFT", 16, -346)
+  panel.up:SetPoint("TOPLEFT", 16, -LIST_Y - ROWS * 21 - 4)
   panel.up:SetScript("OnClick", function() FA.ScrollBuilds(-ROWS + 1) end)
   panel.down = CreateFrame("Button", nil, panel, "UIPanelScrollDownButtonTemplate")
   panel.down:SetSize(18, 18)
@@ -167,9 +368,8 @@ function FA.AskApply()
 end
 
 --[[ What the panel says about the active build: its next point, or why there isn't one, and what it takes to swap. ]]
-local function statusText(build)
+local function statusText(build, p, why)
   if not build then return "Pick a build to follow. Its next talent lights up in the trees." end
-  local p, why = FA.Progress(build)
   if not p then return why end
   local lines = {}
   if p.off > 0 then
@@ -202,14 +402,22 @@ function FA.Refresh()
   local f = Talents.Frame()
   if not FA.PartOn("plan") or (f and not f:IsShown()) then
     panel:Hide()
+    if strip then strip:Hide() end
     lightTalent(nil)
+    dropHover()
     return
   end
   panel:Show()
   local list, active = FA.BuildsFor(FA.class), FA.ActiveBuild()
   offset = math.max(0, math.min(offset, #list - ROWS))
+  --[[ The builds section: its header, then the list when it's open; the panel is as tall as what it shows. ]]
+  local open = buildsOpen(active)
+  local shown = open and math.min(#list, ROWS) or 0
+  panel.header.sign:SetTexture(open and "Interface\\Buttons\\UI-MinusButton-Up" or "Interface\\Buttons\\UI-PlusButton-Up")
+  panel.header.text:SetText((not open and active) and FA.ShownName(active) or ("Builds (" .. #list .. ")"))
+  panel:SetHeight(LIST_Y - 4 + shown * 21 + (open and #list > ROWS and 22 or 0) + 50)
   for i, row in ipairs(panel.rows) do
-    local b = list[i + offset]
+    local b = open and list[i + offset] or nil
     row.build = b
     if b then
       row.text:SetText(FA.ShownName(b))
@@ -219,7 +427,7 @@ function FA.Refresh()
       row:Hide()
     end
   end
-  if #list > ROWS then
+  if open and #list > ROWS then
     panel.up:Show(); panel.down:Show(); panel.more:Show()
     if offset > 0 then panel.up:Enable() else panel.up:Disable() end
     if offset < #list - ROWS then panel.down:Enable() else panel.down:Disable() end
@@ -231,13 +439,16 @@ function FA.Refresh()
     panel.status:SetText("No builds for this class yet. On the site, Copy for addon, then Import here.")
     panel.apply:Disable(); panel.apply:SetText("Apply"); panel.apply.why = nil
     lightTalent(nil)
+    refreshStrip(nil)
     return
   end
-  panel.status:SetText(statusText(active))
-  local p = active and FA.Progress(active)
+  local p, why
+  if active then p, why = FA.Progress(active) end
+  panel.status:SetText(statusText(active, p, why))
   lightTalent(p and p.next and p.next.talent or nil)
+  refreshStrip(p)
   --[[ Apply says how many points it would spend, or why it can't, before it's pressed. ]]
-  local plan, why
+  local plan
   if not active then why = "Pick a build to follow first."
   else
     local can, combat = Talents.CanChange()
@@ -423,6 +634,35 @@ function FA.SetupOptions()
     text:SetText(part.text)
     options:HookScript("OnShow", function() cb:SetChecked(FA.PartOn(part.key)) end)
     y = y - 48
+  end
+
+  --[[ The strip's counts: how many points it shows before the next one, and after it. ]]
+  local heading = options:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  heading:SetPoint("TOPLEFT", 16, y)
+  heading:SetText("The icon strip beside the talent window")
+  y = y - 34
+  for _, kind in ipairs({ { "past", "Taken points shown: " }, { "coming", "Coming points shown: " } }) do
+    local key, text = kind[1], kind[2]
+    local slider = CreateFrame("Slider", "ForeverArmouryStrip" .. key:sub(1, 1):upper() .. key:sub(2), options, "OptionsSliderTemplate")
+    slider:SetPoint("TOPLEFT", 20, y)
+    slider:SetWidth(180)
+    slider:SetMinMaxValues(0, FA.STRIP_MAX[key])
+    slider:SetValueStep(1)
+    if slider.SetObeyStepOnDrag then slider:SetObeyStepOnDrag(true) end
+    local label = options:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    label:SetPoint("LEFT", slider, "RIGHT", 14, 0)
+    local function show(n) label:SetText(text .. n) end
+    slider:SetValue(FA.StripCount(key))
+    show(FA.StripCount(key))
+    slider:SetScript("OnValueChanged", function(_, value)
+      value = math.floor(value + 0.5)
+      if value == FA.db.strip[key] then return end
+      FA.db.strip[key] = value
+      show(value)
+      FA.Refresh()
+    end)
+    options:HookScript("OnShow", function() slider:SetValue(FA.StripCount(key)); show(FA.StripCount(key)) end)
+    y = y - 40
   end
   if Settings and Settings.RegisterCanvasLayoutCategory then
     local cat = Settings.RegisterCanvasLayoutCategory(options, options.name)
