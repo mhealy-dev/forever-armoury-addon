@@ -30,7 +30,7 @@
      which is spelt out as the site's reader has it (JavaScript's \s, Unicode spaces included), not %s.
 
      The reader keeps to the site's (build-code.js): a version is 1 to 3 digits and a build 1 to 8, a name that isn't
-     UTF-8 is refused, and one over 40 characters is cut to 40, with a note. ]]
+     UTF-8 is refused, and one over 40 characters is cut to 40, with a note. The writer cuts to 40 too, as the site's does. ]]
 
 local _, FA = ...
 local Code = {}
@@ -120,7 +120,7 @@ end
 
 function Code.Write(builds, build)
   local parts = {}
-  for i, b in ipairs(builds) do parts[i] = b.cls .. "-" .. encodeName(clean(b.name)) .. "-" .. (b.picks or "") end
+  for i, b in ipairs(builds) do parts[i] = b.cls .. "-" .. encodeName((cutName(clean(b.name)))) .. "-" .. (b.picks or "") end
   if build == false then return "FAT1-" .. table.concat(parts, ".") end
   return "FAT" .. Code.VERSION .. "-" .. (build or gameBuild()) .. "-" .. table.concat(parts, ".")
 end

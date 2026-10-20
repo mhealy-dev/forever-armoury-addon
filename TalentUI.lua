@@ -102,7 +102,7 @@ local function makePanel()
     row.forget:SetPoint("LEFT", row, "RIGHT", 0, 0)
     row.forget:SetScript("OnClick", function(self)
       local b = self:GetParent().build
-      if b then StaticPopup_Show("FOREVERARMOURY_FORGET", FA.Esc(b.name), nil, { cls = FA.class, id = b.id }) end
+      if b then StaticPopup_Show("FOREVERARMOURY_FORGET", FA.ShownName(b), nil, { cls = FA.class, id = b.id }) end
     end)
     panel.rows[i] = row
   end
@@ -212,7 +212,7 @@ function FA.Refresh()
     local b = list[i + offset]
     row.build = b
     if b then
-      row.text:SetText(b.name ~= "" and FA.Esc(b.name) or "Unnamed")
+      row.text:SetText(FA.ShownName(b))
       row.mark:SetShown(active == b)
       row:Show()
     else
@@ -362,7 +362,7 @@ function FA.ImportText(text)
     --[[ A character with one build and none followed follows it, so the first paste lights a talent straight away. ]]
     if mine > 0 and not FA.ActiveBuild() then
       local list = FA.BuildsFor(FA.class)
-      if #list == 1 then FA.SetActive(list[1].id); said = said .. " Following " .. FA.Esc(list[1].name) .. "." end
+      if #list == 1 then FA.SetActive(list[1].id); said = said .. " Following " .. FA.ShownName(list[1]) .. "." end
     end
   end
   if routes then

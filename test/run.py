@@ -326,6 +326,15 @@ class BuildCode(unittest.TestCase):
         self.assertEqual(cut("FAT2-70170-rogue-E-.rogue-" + "a" * 50 + "-0a")[1], "The name of build 2 was cut to 40 characters.")
         self.assertEqual(cut("FAT2-70170-rogue-" + "a" * 50 + "-0a.rogue-" + "b" * 50 + "-0a")[2], 2)
 
+    def test_the_writer_cuts_a_name_to_40_characters_as_the_site_does(self):
+        write = L.eval("function(name) return FA.Code.Write({ { cls = 'rogue', name = name, picks = '0a' } }) end")
+        self.assertEqual(write("a" * 41), "FAT2-70170-rogue-" + "a" * 40 + "-0a")
+        self.assertEqual(write("a" * 40), "FAT2-70170-rogue-" + "a" * 40 + "-0a")
+        self.assertEqual(write("é" * 41), "FAT2-70170-rogue-" + "%C3%A9" * 40 + "-0a")   # characters, not bytes
+        # what it writes reads back whole, with no note
+        read = L.eval("function(t) local b, e, n = FA.Code.Read(t); return b[1].name, #n end")
+        self.assertEqual(read(write("b" * 60)), ("b" * 40, 0))
+
     def test_whitespace_of_every_kind_collapses(self):
         name = L.eval("function(t) local b = assert(FA.Code.Read(t)); return b[1].name end")
         self.assertEqual(name("FAT2-70170-rogue-%20%20Two%20%20%20words%20-0a"), "Two words")
@@ -472,12 +481,17 @@ class Talents(unittest.TestCase):
           return table.concat(errors, "; "), PRINTED
         end""")
         for ns, name in [("C_Traits", n) for n in ["GetConfigInfo", "GetGroupDisplayInfoByTreeID", "GetTreeNodes", "GetNodeInfo", "GetEntryInfo",
-                                                    "GetDefinitionInfo", "GetTreeCurrencyInfo", "ConfigHasStagedChanges", "PurchaseRank", "RollbackConfig"]] + \
+                                                    "GetDefinitionInfo", "PurchaseRank", "RollbackConfig"]] + \
                          [("C_ClassTalents", "CommitConfig"), ("C_SpecializationInfo", "GetCombatConfigIDForSpecGroup")]:
             errors, said = run(ns, name)
             self.assertEqual(errors, "", ns + "." + name)
             self.assertEqual(said.count(ns + "." + name), 1, ns + "." + name + ": " + said)
             self.assertIn("This client has no " + ns + "." + name + ", so", said)
+            L.run("RESET('traits')")
+        # two the addon does without by design, with no line in chat and the fallbacks used
+        for name in ["GetTreeCurrencyInfo", "ConfigHasStagedChanges"]:
+            errors, said = run("C_Traits", name)
+            self.assertEqual((errors, said), ("", ""), name)
             L.run("RESET('traits')")
         # the functions are back: the trees read and Apply spends
         self.assertTrue(L.eval("FA.Talents.Ready()"))
@@ -1273,10 +1287,9 @@ class UI(unittest.TestCase):
 
     def test_the_build_list_scrolls_to_every_build(self):
         names = ["B%d" % n for n in range(1, 26)]
-        L.run("FA.ImportText('" + " ".join("FAT1-warrior-%s-0101" % n if False else "FAT1-warrior-%s-01%02x" % (n, i) for i, n in enumerate(names)) + "')")
+        L.run("FA.ImportText('" + " ".join("FAT1-warrior-%s-01%02x" % (n, i) for i, n in enumerate(names)) + "')")
         self.assertEqual(L.eval("#FA.BuildsFor('warrior')"), 25)
         rows = lambda: [r for r in L.eval("function() local out = {} for i, r in ipairs(ForeverArmouryTalentPanel.rows) do out[i] = r.text.text end return out end")().values()]
-        panel = lambda key: L.eval("ForeverArmouryTalentPanel." + key)
         self.assertEqual(rows(), names[:10])
         self.assertEqual(self.controls(), (True, False, True, True, "1-10 of 25"))     # at the top: up is off
         press = lambda key: L.run("local b = ForeverArmouryTalentPanel.%s; b.scripts.OnClick(b)" % key)
@@ -1329,6 +1342,16 @@ class UI(unittest.TestCase):
         self.assertIn("Spent as A||cffFF0000Red||r says", L.eval("PRINTED"))
         L.run("FA.ImportText('FAT1-warrior-%7CHplain%7Ch-0a')")
         self.assertEqual(L.eval("ForeverArmouryTalentPanel.rows[2].text.text"), "||Hplain||h")
+
+    def test_an_unnamed_build_is_called_unnamed(self):
+        ok, said = L.eval("function(t) return FA.ImportText(t) end")("FAT1-warrior--" + GATED)
+        self.assertIn("Following Unnamed.", said)
+        self.assertEqual(L.eval("ForeverArmouryTalentPanel.rows[1].text.text"), "Unnamed")
+        L.run("local r = ForeverArmouryTalentPanel.rows[1]; r.forget.scripts.OnClick({ GetParent = function() return r end })")
+        self.assertEqual(L.eval("POPUPS[1].which"), "FOREVERARMOURY_FORGET")
+        self.assertEqual(L.eval("POPUPS[1].text"), "Unnamed")   # the %s of "Forget the build %s on this account?"
+        L.run("PRINTED = ''; SlashCmdList.FOREVERARMOURY('list')")
+        self.assertIn("> Unnamed (13 points)", L.eval("PRINTED"))
 
     def test_an_import_before_login_works(self):
         L.run("FA.class = nil; ForeverArmouryDB, ForeverArmouryCharDB = nil, nil; FA.Init()")   # ADDON_LOADED, not yet PLAYER_LOGIN

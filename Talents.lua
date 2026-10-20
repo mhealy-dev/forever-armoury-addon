@@ -53,7 +53,7 @@ local function game(path, ...)
   if type(fn) ~= "function" then
     if not missing[path] then
       missing[path] = true
-      FA.Print("This client has no " .. path .. ", so what the addon does with it won't work.")
+      FA.Print("This client has no " .. path .. ", so the addon can't use it for your talents.")
     end
     return nil
   end
@@ -242,7 +242,7 @@ function Talents.Forget() views = {} end
 
 function Talents.Unspent()
   local configID = activeConfig()
-  if configID then
+  if configID and C_Traits.GetTreeCurrencyInfo then
     local currencies = game("C_Traits.GetTreeCurrencyInfo", configID, treeOf(configID), false)
     if currencies and currencies[1] then return currencies[1].quantity or 0 end
   end
@@ -270,7 +270,7 @@ end
 --[[ Whether the talent window has points bought but not applied yet: the addon leaves those to the window. ]]
 function Talents.HasStaged()
   local configID = activeConfig()
-  return configID and game("C_Traits.ConfigHasStagedChanges", configID) and true or false
+  return configID and C_Traits.ConfigHasStagedChanges and game("C_Traits.ConfigHasStagedChanges", configID) and true or false
 end
 Talents.STAGED = "The talent window has changes waiting. Apply or undo them there first."
 

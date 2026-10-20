@@ -55,6 +55,9 @@ end
 --[[ A name as text to draw: a | in it is doubled, so a |c or |H in a build's name shows as typed instead of taking effect. ]]
 function FA.Esc(text) return (tostring(text or ""):gsub("|", "||")) end
 
+--[[ A build's name to draw: escaped, and "Unnamed" for none. ]]
+function FA.ShownName(build) return build.name ~= "" and FA.Esc(build.name) or "Unnamed" end
+
 --[[ The character's class as the site names it ("warrior"). ]]
 function FA.SetClass() FA.class = (select(2, UnitClass("player")) or ""):lower() end
 
@@ -120,7 +123,7 @@ SlashCmdList.FOREVERARMOURY = function(msg)
     local list = FA.BuildsFor and FA.BuildsFor(FA.class) or {}
     if #list == 0 then FA.Print("No builds for this class yet. /fa import to paste some in.") end
     local active = FA.ActiveBuild and FA.ActiveBuild()
-    for _, b in ipairs(list) do FA.Print((active == b and "> " or "  ") .. FA.Esc(b.name) .. " (" .. math.floor(#b.picks / 2) .. " points)") end
+    for _, b in ipairs(list) do FA.Print((active == b and "> " or "  ") .. FA.ShownName(b) .. " (" .. math.floor(#b.picks / 2) .. " points)") end
   elseif cmd == "plan" then
     local on = rest:lower()
     if on == "on" then FA.SetPart("plan", true) elseif on == "off" then FA.SetPart("plan", false) else FA.SetPart("plan", not FA.PartOn("plan")) end
