@@ -1,6 +1,6 @@
 ## Interface: 16001
 ## Title: Forever Armoury
-## Notes: Your Forever Armoury talent builds in the game: paste them in, pick one, and see your next talent.
+## Notes: Your Forever Armoury talent builds and leveling gear route in the game: paste them in and see what's next.
 ## Author: Forever Armoury
 ## Version: @project-version@
 ## SavedVariables: ForeverArmouryDB
@@ -14,3 +14,6 @@ BuildCode.lua
 Talents.lua
 Builds.lua
 TalentUI.lua
+GearCode.lua
+Gear.lua
+GearUI.lua

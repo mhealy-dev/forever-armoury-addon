@@ -250,12 +250,12 @@ local function makeImportBox()
 
   local title = importBox:CreateFontString(nil, "OVERLAY", "GameFontNormal")
   title:SetPoint("TOP", 0, -16)
-  title:SetText("Forever Armoury: build codes")
+  title:SetText("Forever Armoury: codes from the site")
   local hint = importBox:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   hint:SetPoint("TOPLEFT", 16, -34)
   hint:SetPoint("TOPRIGHT", -16, -34)
   hint:SetJustifyH("LEFT")
-  hint:SetText("Paste a build code from the site (Copy for addon) and press Import. Export puts your builds' code here to copy.")
+  hint:SetText("Paste a build code or a gear route code from the site (Copy for addon) and press Import. Export puts your builds' code here to copy.")
 
   local scroll = CreateFrame("ScrollFrame", "ForeverArmouryImportScroll", importBox, "UIPanelScrollFrameTemplate")
   scroll:SetPoint("TOPLEFT", 18, -64)
@@ -303,27 +303,48 @@ local function makeImportBox()
   close:SetScript("OnClick", function() importBox:Hide() end)
 end
 
---[[ Reads the codes in a pasted text and keeps their builds; says what came of it in the box and in chat. ]]
+--[[ Reads the codes in a pasted text and keeps their builds and gear routes; says what came of it in the box and in
+     chat. One paste can hold both kinds. When neither reads, the error is the gear code's if the text has one and no
+     build code, else the build code's; when one kind reads and the other doesn't, the other's error is added. ]]
 function FA.ImportText(text)
   local builds, err, notes = FA.Code.Read(text)
-  if not builds then
+  local routes, gerr, gnotes = nil, nil, nil
+  if FA.GearCode then routes, gerr, gnotes = FA.GearCode.Read(text) end
+  local hasBuild = tostring(text or ""):find("FAT%d+%-") ~= nil
+  local hasGear = FA.GearCode and FA.GearCode.Find(text)
+  if not builds and not routes then
+    if hasGear and not hasBuild then err = gerr end
     if importBox then importBox.status:SetText("|cffff6060" .. err .. "|r") end
     return false, err
   end
-  local mine, others = FA.AddBuilds(builds)
   local className = FA.class:sub(1, 1):upper() .. FA.class:sub(2)
-  local said = (mine == 0 and "No " or mine .. " ") .. className .. (mine == 1 and " build" or " builds") .. " imported"
-  if others > 0 then said = said .. ", and " .. others .. " for other classes kept for their characters" end
-  said = said .. "."
-  for _, n in ipairs(notes or {}) do said = said .. " " .. n end
-  --[[ A character with one build and none followed follows it, so the first paste lights a talent straight away. ]]
-  if mine > 0 and not FA.ActiveBuild() then
-    local list = FA.BuildsFor(FA.class)
-    if #list == 1 then FA.SetActive(list[1].id); said = said .. " Following " .. list[1].name .. "." end
+  local mine, others, said = 0, 0, ""
+  if builds then
+    mine, others = FA.AddBuilds(builds)
+    said = (mine == 0 and "No " or mine .. " ") .. className .. (mine == 1 and " build" or " builds") .. " imported"
+    if others > 0 then said = said .. ", and " .. others .. " for other classes kept for their characters" end
+    said = said .. "."
+    for _, n in ipairs(notes or {}) do said = said .. " " .. n end
+    --[[ A character with one build and none followed follows it, so the first paste lights a talent straight away. ]]
+    if mine > 0 and not FA.ActiveBuild() then
+      local list = FA.BuildsFor(FA.class)
+      if #list == 1 then FA.SetActive(list[1].id); said = said .. " Following " .. list[1].name .. "." end
+    end
   end
+  if routes then
+    local rmine, rothers = FA.Gear.Add(routes)
+    said = said .. (said ~= "" and " " or "") .. (rmine == 0 and "No " or rmine .. " ") .. className .. (rmine == 1 and " gear route" or " gear routes") .. " imported"
+    if rothers > 0 then said = said .. ", and " .. rothers .. " for other classes kept for their characters" end
+    said = said .. "."
+    for _, n in ipairs(gnotes or {}) do said = said .. " " .. n end
+    if rmine > 0 and FA.Gear.Spec() == nil then said = said .. " Follow a build, or pick the route's spec in the gear panel." end
+  end
+  if builds and not routes and hasGear then said = said .. " " .. gerr end
+  if routes and not builds and hasBuild then said = said .. " " .. err end
   if importBox then importBox.status:SetText(said); importBox.box:SetText("") end
   FA.Print(said)
   FA.Refresh()
+  if FA.RefreshGear then FA.RefreshGear() end
   return true, said
 end
 
