@@ -32,7 +32,6 @@ local function lightOn(set, t, r, g, b, pulses)
   if not o then
     local f = CreateFrame("Frame", nil, button)
     f:SetAllPoints(button)
-    f:SetFrameLevel(button:GetFrameLevel() + 5)
     local tex = f:CreateTexture(nil, "OVERLAY")
     tex:SetTexture("Interface\\Buttons\\CheckButtonHilight")
     tex:SetBlendMode("ADD")
@@ -48,6 +47,7 @@ local function lightOn(set, t, r, g, b, pulses)
     end
     set[button] = o
   end
+  o.frame:SetFrameLevel(button:GetFrameLevel() + 5)   -- every time: a recycled button may have a new level, and the overlay stays above it
   o.frame:Show()
   if o.pulse then o.pulse:Play() end
 end
@@ -641,17 +641,22 @@ function FA.SetupOptions()
   heading:SetPoint("TOPLEFT", 16, y)
   heading:SetText("The icon strip beside the talent window")
   y = y - 34
-  for _, kind in ipairs({ { "past", "Taken points shown: " }, { "coming", "Coming points shown: " } }) do
+  for _, kind in ipairs({ { "past", "Taken points shown" }, { "coming", "Coming points shown" } }) do
     local key, text = kind[1], kind[2]
-    local slider = CreateFrame("Slider", "ForeverArmouryStrip" .. key:sub(1, 1):upper() .. key:sub(2), options, "OptionsSliderTemplate")
+    local name = "ForeverArmouryStrip" .. key:sub(1, 1):upper() .. key:sub(2)
+    local slider = CreateFrame("Slider", name, options, "OptionsSliderTemplate")
     slider:SetPoint("TOPLEFT", 20, y)
     slider:SetWidth(180)
     slider:SetMinMaxValues(0, FA.STRIP_MAX[key])
     slider:SetValueStep(1)
     if slider.SetObeyStepOnDrag then slider:SetObeyStepOnDrag(true) end
+    --[[ the template's own captions say LOW and HIGH; a client without them (or named otherwise) is left alone ]]
+    if _G[name .. "Low"] then _G[name .. "Low"]:SetText("0") end
+    if _G[name .. "High"] then _G[name .. "High"]:SetText(tostring(FA.STRIP_MAX[key])) end
+    if _G[name .. "Text"] then _G[name .. "Text"]:SetText(text) end
     local label = options:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     label:SetPoint("LEFT", slider, "RIGHT", 14, 0)
-    local function show(n) label:SetText(text .. n) end
+    local function show(n) label:SetText(n) end
     slider:SetValue(FA.StripCount(key))
     show(FA.StripCount(key))
     slider:SetScript("OnValueChanged", function(_, value)

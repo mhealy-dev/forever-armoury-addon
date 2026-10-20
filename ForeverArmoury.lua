@@ -24,21 +24,33 @@ if FA.VERSION:find("^@") then FA.VERSION = "dev" end   -- a checkout, not a pack
 --[[ Point n of a build is taken at level n + FA.FirstLevel() - 1. The site's builds start at level 10, FIRST_LEVEL;
      the Legacy perk Talented (forever-armoury#512) moves the first point a level earlier for each rank, so the
      character's first level is 10 minus its rank. The perk is a node of the Legacy system's Adventure tree, read from
-     the game; a game that won't say counts as no ranks. ]]
+     the game. When the game won't say, the build's own rank is used (a FAT3- code carries it, forever-armoury#1540),
+     and 10 when neither is known. ]]
 FA.FIRST_LEVEL = 10
 local LEGACY = Constants and Constants.LegacyConsts or {}
 FA.TALENTED_TREE = LEGACY.LEGACY_TREE_ADVENTURE_ID or 1188
 FA.TALENTED_NODE = LEGACY.LEGACY_TREE_ADVENTURE_TALENTED_NODE_ID or 110298
 
---[[ The ranks of Talented the character has, 0 when the game won't say. ]]
-function FA.TalentedRank()
-  if not (C_Traits and C_Traits.GetConfigIDByTreeID and C_Traits.GetNodeInfo) then return 0 end
+--[[ The ranks of Talented the character has, as the game says, or nil when it won't (no Legacy config, no node, no
+     rank in the answer: a 0 the game does give is a 0). ]]
+function FA.GameTalentedRank()
+  if not (C_Traits and C_Traits.GetConfigIDByTreeID and C_Traits.GetNodeInfo) then return nil end
   local configID = C_Traits.GetConfigIDByTreeID(FA.TALENTED_TREE)
   local info = configID and C_Traits.GetNodeInfo(configID, FA.TALENTED_NODE)
-  local rank = info and tonumber(info.ranksPurchased) or 0
-  return math.max(0, math.min(FA.FIRST_LEVEL - 1, rank))
+  local rank = info and tonumber(info.ranksPurchased)
+  return rank and math.max(0, math.min(FA.FIRST_LEVEL - 1, rank))
 end
-function FA.FirstLevel() return FA.FIRST_LEVEL - FA.TalentedRank() end
+
+--[[ The rank of Talented to count levels by, and where it came from: the game's ("game"), else the build's own
+     ("build", for a build given and one that knows its rank), else 0 ("none"). ]]
+function FA.TalentedRank(build)
+  local game = FA.GameTalentedRank()
+  if game then return game, "game" end
+  local own = build and tonumber(build.talented)
+  if own then return math.max(0, math.min(FA.FIRST_LEVEL - 1, own)), "build" end
+  return 0, "none"
+end
+function FA.FirstLevel(build) return FA.FIRST_LEVEL - (FA.TalentedRank(build)) end
 
 --[[ The addon's parts, each with its own switch (FA.PartOn). The level plan and the leveling gear are the first;
      BIS lists, macros and the UI layout may follow. A part that is off draws nothing and hooks nothing it can avoid. ]]
@@ -149,6 +161,11 @@ SlashCmdList.FOREVERARMOURY = function(msg)
   elseif cmd == "debug" then
     FA.Talents.Forget()
     for _, line in ipairs(FA.Talents.Dump()) do FA.Print(line) end
+    local active = FA.ActiveBuild and FA.ActiveBuild()
+    local rank, from = FA.TalentedRank(active)
+    FA.Print("Talented rank " .. rank .. ", " .. (from == "game" and "read from the game" or
+      from == "build" and ("the build " .. FA.ShownName(active) .. "'s own: the game won't say") or
+      "neither the game nor a build says") .. "; the first point comes at level " .. FA.FirstLevel(active) .. ".")
   else
     FA.Print("Forever Armoury " .. FA.VERSION)
     for _, line in ipairs(HELP) do FA.Print(line) end

@@ -18,7 +18,7 @@ Copy the folder into `World of Warcraft\_forever_\Interface\AddOns\ForeverArmour
 - `/fa gear` opens the character window with the gear route's panel beside it (see [Leveling gear](#leveling-gear)).
 - `/fa plan off` turns the level plan part off and `/fa gear off` the leveling gear; `/fa options` opens the settings; `/fa debug` lists every talent by tree, row and column as the addon reads them, with each node's position, the grid each tree was sorted by, and any talent left out and why.
 
-With the Legacy perk **Talented**, your first talent point comes earlier, a level for each rank; the addon reads your rank from the game and moves the build's levels to match.
+With the Legacy perk **Talented**, your first talent point comes earlier, a level for each rank; the addon reads your rank from the game (or, when the game won't say, from the build's own, which a `FAT3-` code carries) and moves the build's levels to match.
 
 A build is kept for the account, so every character of its class can follow it. Pasting a build again that's the same name and points updates it in place; a build with the same name and other points is another build, so two Arms builds sit side by side.
 
@@ -44,11 +44,11 @@ An off hand is put away by a two-handed main hand picked up after it, as the sit
 ## The code
 
 ```
-FAT2-70170-warrior-Arms%20PvP-0a0a0a0b0b0b1c
-FAT <version> - <build> - <class> - <name> - <picks> { . <class> - <name> - <picks> }
+FAT3-70170-warrior-Arms%20PvP-0a0a0a0b0b0b1c1c-3
+FAT <version> - <build> - <class> - <name> - <picks> - <talented> { . <class> - <name> - <picks> - <talented> }
 ```
 
-The site writes it (`public/content/build-code.js` in forever-armoury) and `BuildCode.lua` reads it. The build is the game client's build number the talents are from (`GetBuildInfo`'s second answer): a talent that moves between the beta's builds changes what a cell means, so the site carries a code's picks to the trees it has by it; the addon writes the build it runs on and applies a code's cells to the game's own trees, which are the truth in-game. A `FAT1-` code, from before the build was written in, still reads. The reader keeps to the site's: a name is cut to 40 characters (with a note; Export cuts it too), must be UTF-8, and has its spaces, Unicode ones too, collapsed; a version is 1 to 3 digits and a build 1 to 8. The picks are the build's points in the order spent, two characters each: the tree, then the talent's cell (tier and column).
+The site writes it (`public/content/build-code.js` in forever-armoury) and `BuildCode.lua` reads it. The build is the game client's build number the talents are from (`GetBuildInfo`'s second answer): a talent that moves between the beta's builds changes what a cell means, so the site carries a code's picks to the trees it has by it; the addon writes the build it runs on and applies a code's cells to the game's own trees, which are the truth in-game. The `<talented>` is the build's rank of the Legacy perk Talented (one digit, 0 to 5), which brings the first talent point that many levels early: the level plan counts levels by the rank the game says the character has, and by the build's own when the game won't say. `FAT2-` and `FAT1-` codes, from before the rank and the build were written in, still read, with rank 0; Export writes `FAT3-`. The reader keeps to the site's: a name is cut to 40 characters (with a note; Export cuts it too), must be UTF-8, and has its spaces, Unicode ones too, collapsed; a version is 1 to 3 digits and a build 1 to 8. The picks are the build's points in the order spent, two characters each: the tree, then the talent's cell (tier and column).
 
 The gear route code is its own:
 
@@ -133,4 +133,3 @@ MIT, in `LICENSE`.
 - **The leveling gear in the beta** (`docs/gear-route.md`): `GetItemInfo` on Forever's item ids above 270,000 for an item not yet cached, and the load events after it; `C_Container` in interface 16001; whether the game names Forever's own dungeons, bosses and quests from their ids; the panel's place beside the character window.
 - **The site's Copy for addon** for routes: the Leveling plate's button and `public/content/gear-code.js`, writing the code `docs/gear-route.md` defines.
 - **The CurseForge listing** (forever-armoury#1537): the project, its ID in the `.toc`, and the release process.
-- **Talented in the code** (forever-armoury#1540): the site's codes still say point n is taken at level n + 9; the addon moves the levels by the rank it reads.
