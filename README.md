@@ -10,23 +10,23 @@ Copy the folder into `World of Warcraft\_forever_\Interface\AddOns\ForeverArmour
 
 ## Use
 
-- `/fa` opens the talent window, with the addon's panel beside it: your builds for this class, the one you follow marked, and its next talent named and lit in the trees. Click a build to follow it; the **x** beside it forgets it.
+- `/fa` opens the talent window, with the addon's panel beside it: your builds for this class, the one you follow marked, and its next talent named and lit in the trees. Click a build to follow it; the **x** beside it forgets it. With more than ten builds, the arrows under the list (or the mouse wheel over the panel) scroll it.
 - **Import** (or `/fa import`) opens the box to paste a code into. One paste can hold every build of a class, or several codes, and a gear route code beside them.
 - **Export** (or `/fa export`) puts the code for every build of your class in the box, to paste into the site's Import box. Each build keeps the game build it was imported from, so builds from different game builds come out as a code each, one per line; the site reads them all from one paste.
-- **Apply** (or `/fa apply`) spends your unspent points as the build you follow says, in its order, after one confirm that names them. It's all or none: if the game refuses a point, or fails the commit, nothing is spent. The button says how many points it would spend, or why it can't.
+- **Apply** (or `/fa apply`) spends your unspent points as the build you follow says, in its order, after one confirm that names them. It's all or none: if the game refuses a point, or fails the commit, nothing is spent. The button says how many points it would spend, or why it can't (in combat, for one); it follows the fight as it starts and ends.
 - `/fa gear` opens the character window with the gear route's panel beside it (see [Leveling gear](#leveling-gear)).
 - `/fa plan off` turns the level plan part off and `/fa gear off` the leveling gear; `/fa options` opens the settings; `/fa debug` lists every talent by tree, row and column as the addon reads them, with each node's position, the grid each tree was sorted by, and any talent left out and why.
 
 With the Legacy perk **Talented**, your first talent point comes earlier, a level for each rank; the addon reads your rank from the game and moves the build's levels to match.
 
-A build is kept for the account, so every character of its class can follow it. Pasting a build again, after changing it on the site, updates the one with that name.
+A build is kept for the account, so every character of its class can follow it. Pasting a build again that's the same name and points updates it in place; a build with the same name and other points is another build, so two Arms builds sit side by side.
 
 ### Swapping builds
 
 Click another build in the panel to follow it. If your points fit it, Apply carries on with it. If you have points it doesn't, the panel names them and says what it takes:
 
 - **Your other spec fits it** (with dual spec): activate that spec in the talent window, then Apply.
-- **Otherwise**: reset your talents at a class trainer. When the trainer asks, the addon says how many points Apply will spend afterwards; the reset and its cost stay the game's own dialog. Then open your talents and press Apply once.
+- **Otherwise**: reset your talents at a class trainer. When you accept the trainer's reset, the addon says how many points Apply will spend afterwards (a cancelled dialog says nothing); the reset and its cost stay the game's own dialog. Then open your talents and press Apply once.
 
 ## Leveling gear
 
@@ -47,7 +47,7 @@ FAT2-70170-warrior-Arms%20PvP-0a0a0a0b0b0b1c
 FAT <version> - <build> - <class> - <name> - <picks> { . <class> - <name> - <picks> }
 ```
 
-The site writes it (`public/content/build-code.js` in forever-armoury) and `BuildCode.lua` reads it. The build is the game client's build number the talents are from (`GetBuildInfo`'s second answer): a talent that moves between the beta's builds changes what a cell means, so the site carries a code's picks to the trees it has by it; the addon writes the build it runs on and applies a code's cells to the game's own trees, which are the truth in-game. A `FAT1-` code, from before the build was written in, still reads. The picks are the build's points in the order spent, two characters each: the tree, then the talent's cell (tier and column).
+The site writes it (`public/content/build-code.js` in forever-armoury) and `BuildCode.lua` reads it. The build is the game client's build number the talents are from (`GetBuildInfo`'s second answer): a talent that moves between the beta's builds changes what a cell means, so the site carries a code's picks to the trees it has by it; the addon writes the build it runs on and applies a code's cells to the game's own trees, which are the truth in-game. A `FAT1-` code, from before the build was written in, still reads. The reader keeps to the site's: a name is cut to 40 characters (with a note), must be UTF-8, and has its spaces, Unicode ones too, collapsed; a version is 1 to 3 digits and a build 1 to 8. The picks are the build's points in the order spent, two characters each: the tree, then the talent's cell (tier and column).
 
 The gear route code is its own:
 
@@ -128,7 +128,7 @@ MIT, in `LICENSE`.
 
 ## Still to settle
 
-- **In the beta** (forever-armoury#1536): that the nodes' positions sort into the same rows and columns as the site's trees, and nothing is left out (`/fa debug`); what `CanChangeTalents` answers before and after a point is staged; that Apply's purchases and commit go through from an addon outside the window, and what a commit cast that's interrupted leaves; that the unspent count and Talented's rank read as the addon expects; the panel's place beside the window, and the highlight's look on the round buttons.
+- **In the beta** (forever-armoury#1536, #1539): that the events `ACTIVE_COMBAT_CONFIG_CHANGED`, `PLAYER_REGEN_ENABLED` and `PLAYER_REGEN_DISABLED` exist (chat names any the game refuses at login) and the Apply button follows combat; that the trainer's reset dialog is Blizzard's `CONFIRM_TALENT_WIPE` popup, so accepting it says what Apply will spend (chat says at login if the popup isn't there); the build list's arrows and wheel in the panel; that every `C_Traits` function the addon calls is in the client (chat names any that isn't); that the nodes' positions sort into the same rows and columns as the site's trees, and nothing is left out (`/fa debug`); what `CanChangeTalents` answers before and after a point is staged; that Apply's purchases and commit go through from an addon outside the window, and what a commit cast that's interrupted leaves; that the unspent count and Talented's rank read as the addon expects; the panel's place beside the window, and the highlight's look on the round buttons.
 - **The leveling gear in the beta** (`docs/gear-route.md`): `GetItemInfo` on Forever's item ids above 270,000 for an item not yet cached, and the load events after it; `C_Container` in interface 16001; whether the game names Forever's own dungeons, bosses and quests from their ids; the panel's place beside the character window.
 - **The site's Copy for addon** for routes: the Leveling plate's button and `public/content/gear-code.js`, writing the code `docs/gear-route.md` defines.
 - **The CurseForge listing** (forever-armoury#1537): the project, its ID in the `.toc`, and the release process.

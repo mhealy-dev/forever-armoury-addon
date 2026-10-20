@@ -26,7 +26,11 @@
      Version 1 had no build: FAT1-<class>-<name>-<picks>{.<class>-<name>-<picks>}.
 
      Letters and digits are spelt out as A-Z, a-z and 0-9 rather than %w, which follows the locale: under a UTF-8 one
-     it takes bytes above 127 for letters, and a name would pass them through unencoded. ]]
+     it takes bytes above 127 for letters, and a name would pass them through unencoded. The same goes for whitespace,
+     which is spelt out as the site's reader has it (JavaScript's \s, Unicode spaces included), not %s.
+
+     The reader keeps to the site's (build-code.js): a version is 1 to 3 digits and a build 1 to 8, a name that isn't
+     UTF-8 is refused, and one over 40 characters is cut to 40, with a note. ]]
 
 local _, FA = ...
 local Code = {}
@@ -35,15 +39,66 @@ FA.Code = Code
 Code.VERSION = 2
 local CLASSES = { warrior = true, paladin = true, hunter = true, rogue = true, priest = true, shaman = true, mage = true, warlock = true, druid = true }
 --[[ a code in a pasted text: its start, and everything after it that a code is made of ]]
-local FIND = "FAT%d+%-[A-Za-z0-9%%%.%-]*"
+local FIND = "FAT%d%d?%d?%-[A-Za-z0-9%%%.%-]*"
+local MAX_NAME = 40
 local NOT_A_CODE = "That isn't a build code. A build code starts with FAT2- (or FAT1-, from before)."
 
-local function clean(name) return (tostring(name or ""):gsub("%s+", " "):match("^%s*(.-)%s*$")) end
+--[[ JavaScript's \s in UTF-8, as the site's reader collapses it: the ASCII spaces, then each of the Unicode ones. ]]
+local SPACES = { "\194\160", "\225\154\128", "\226\128[\128-\138]", "\226\128\168", "\226\128\169", "\226\128\175",
+  "\226\129\159", "\227\128\128", "\239\187\191" }
+local function clean(name)
+  name = tostring(name or "")
+  for _, space in ipairs(SPACES) do name = name:gsub(space, " ") end
+  return (name:gsub("[ \t\n\v\f\r]+", " "):match("^ ?(.-) ?$"))
+end
 local function encodeName(name) return (name:gsub("[^A-Za-z0-9]", function(c) return string.format("%%%02X", c:byte()) end)) end
---[[ The name as text, or nil when it isn't a name (a broken or cut-off %XX). ]]
+--[[ Whether s is UTF-8 as the site's decodeURIComponent takes it: no stray or missing continuation bytes, no overlong
+     forms, no surrogates, nothing past U+10FFFF. ]]
+local function validUtf8(s)
+  local i, n = 1, #s
+  while i <= n do
+    local c = s:byte(i)
+    local len, min
+    if c < 0x80 then len, min = 1, 0
+    elseif c >= 0xC2 and c <= 0xDF then len, min = 2, 0x80
+    elseif c >= 0xE0 and c <= 0xEF then len, min = 3, 0x800
+    elseif c >= 0xF0 and c <= 0xF4 then len, min = 4, 0x10000
+    else return false end
+    if i + len - 1 > n then return false end
+    local cp = len == 1 and c or c % (2 ^ (7 - len))
+    for j = 1, len - 1 do
+      local b = s:byte(i + j)
+      if b < 0x80 or b > 0xBF then return false end
+      cp = cp * 64 + (b - 0x80)
+    end
+    if cp < min or cp > 0x10FFFF or (cp >= 0xD800 and cp <= 0xDFFF) then return false end
+    i = i + len
+  end
+  return true
+end
+--[[ The name as text, or nil when it isn't a name (a broken or cut-off %XX, or bytes that aren't UTF-8). ]]
 local function decodeName(s)
   for pos in s:gmatch("()%%") do if not s:sub(pos + 1, pos + 2):match("^%x%x$") then return nil end end
-  return (s:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end))
+  local name = s:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
+  return validUtf8(name) and name or nil
+end
+--[[ s without the dots at its end, counted back from the end: a pattern like "%.+$" tries every run of dots in a long
+     pasted code, and is quadratic in its length (forever-armoury #926). ]]
+local function trimDots(s)
+  local n = #s
+  while n > 0 and s:byte(n) == 46 do n = n - 1 end
+  return s:sub(1, n)
+end
+--[[ The first MAX_NAME characters of a name (UTF-8 characters, not bytes), and whether it was longer. ]]
+local function cutName(name)
+  local count, pos = 0, 1
+  while pos <= #name do
+    if count == MAX_NAME then return name:sub(1, pos - 1), true end
+    local c = name:byte(pos)
+    pos = pos + (c < 0xC0 and 1 or c < 0xE0 and 2 or c < 0xF0 and 3 or 4)
+    count = count + 1
+  end
+  return name, false
 end
 --[[ The game's build number, as the code carries it: 0 outside the game (the tests stub GetBuildInfo). ]]
 local function gameBuild()
@@ -82,14 +137,22 @@ local function read1(body, out, build)
     name = decodeName(name)
     if not name then return "The name of build " .. n .. " in that code is cut off or changed. Copy the whole code again." end
     if picks == "" then out.empty = out.empty + 1
-    else out.builds[#out.builds + 1] = { cls = cls, name = clean(name), picks = picks, build = build } end
+    else
+      local cut
+      name, cut = cutName(clean(name))
+      if cut then
+        name = clean(name)
+        out.notes[#out.notes + 1] = "The name of build " .. n .. " was cut to " .. MAX_NAME .. " characters."
+      end
+      out.builds[#out.builds + 1] = { cls = cls, name = name, picks = picks, build = build }
+    end
   end
   return nil
 end
 --[[ Version 2: <build>-, then as version 1. ]]
 local function read2(body, out)
   local build, rest = body:match("^(%d+)%-(.*)$")
-  if not build then return "That code doesn't read. It may be cut off: copy the whole code again." end
+  if not build or #build > 8 then return "That code doesn't read. It may be cut off: copy the whole code again." end
   return read1(rest, out, tonumber(build))
 end
 local READERS = { [1] = read1, [2] = read2 }
@@ -107,7 +170,7 @@ function Code.Read(text)
       return nil, NOT_A_CODE
     end
     --[[ a sentence's full stop after the code isn't part of it ]]
-    local body = m:gsub("^FAT%d+%-", ""):gsub("%.+$", "")
+    local body = trimDots((m:gsub("^FAT%d+%-", "")))
     local err = reader(body, out)
     if err then return nil, err end
   end

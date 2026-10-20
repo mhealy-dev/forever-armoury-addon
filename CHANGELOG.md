@@ -2,6 +2,18 @@
 
 ## 0.4.0 (unreleased)
 
+Small fixes after the first release (forever-armoury #1539):
+
+- **Builds with one name keep each their points**: an import updates a build only when its name and points both match one kept, so two Arms builds, or two unnamed ones, are two builds, not one overwriting the other.
+- **The build list scrolls**: an arrow pair under it and the mouse wheel over the panel move it, so an 11th build, and a 100th, can be picked.
+- **A name is drawn as typed**: a `|` in a build's name is doubled where the addon draws it (the list, chat, the confirms), so a `|c` colour escape in a name doesn't take effect.
+- **The class is read at load**, not at `PLAYER_LOGIN`, so an import before the login event no longer errors.
+- **Refreshes are one a frame**: the panel redraws once however many talent events come, and the addon listens for `ACTIVE_COMBAT_CONFIG_CHANGED`, `PLAYER_REGEN_ENABLED` and `PLAYER_REGEN_DISABLED`, so the Apply button turns off in combat and on again after it. An event name the game doesn't have is said in chat; registering it used to fail without a word.
+- **The trainer's reset message** is said when the reset is accepted, not when the dialog comes up (a cancelled dialog says nothing), and counts the points Apply would spend, from the game's own count, not from the level.
+- **The reader keeps to the site's** (`build-code.js`): a name is cut to 40 characters with the site's note, a name that isn't UTF-8 is refused, a version is 1 to 3 digits and a game build 1 to 8, Unicode spaces collapse as ASCII ones do, and a long run of dots no longer takes quadratic time (forever-armoury #926). The code's format and version are as they were.
+- **A trait function the client lacks** is said in chat once, by name, and the addon carries on without it, instead of a Lua error.
+- **Saved builds are checked at load**: one that isn't a table or has no picks is dropped, and a missing name or id is repaired, with a line in chat saying so.
+
 The leveling gear part (forever-armoury #280, `docs/gear-route.md`):
 
 - **Gear routes from the site**: the Leveling plate's route for a class, spec and side, as a `FAG1-` code pasted into the import box (one paste can hold a build code and a gear code). Routes are kept for the account by class, one per spec and side.

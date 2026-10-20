@@ -9,8 +9,9 @@ local Talents = FA.Talents
 local BACKDROP = { bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background", edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
   tile = true, tileSize = 32, edgeSize = 32, insets = { left = 11, right = 12, top = 12, bottom = 11 } }
 local TEMPLATE = BackdropTemplateMixin and "BackdropTemplate" or nil
-local ROWS = 10
+local ROWS = 10   -- builds shown at once; the list scrolls past them
 local panel, importBox, options, hooked
+local offset = 0   -- how many builds are scrolled off the top of the list
 local glows = {}   -- talent button -> its highlight
 
 --[[ ---- the next-talent highlight ---- ]]
@@ -101,10 +102,24 @@ local function makePanel()
     row.forget:SetPoint("LEFT", row, "RIGHT", 0, 0)
     row.forget:SetScript("OnClick", function(self)
       local b = self:GetParent().build
-      if b then StaticPopup_Show("FOREVERARMOURY_FORGET", b.name, nil, { cls = FA.class, id = b.id }) end
+      if b then StaticPopup_Show("FOREVERARMOURY_FORGET", FA.Esc(b.name), nil, { cls = FA.class, id = b.id }) end
     end)
     panel.rows[i] = row
   end
+
+  --[[ More builds than rows: an arrow pair under the list (and the mouse wheel over the panel) moves it. ]]
+  panel.up = CreateFrame("Button", nil, panel, "UIPanelScrollUpButtonTemplate")
+  panel.up:SetSize(18, 18)
+  panel.up:SetPoint("TOPLEFT", 16, -346)
+  panel.up:SetScript("OnClick", function() FA.ScrollBuilds(-ROWS + 1) end)
+  panel.down = CreateFrame("Button", nil, panel, "UIPanelScrollDownButtonTemplate")
+  panel.down:SetSize(18, 18)
+  panel.down:SetPoint("LEFT", panel.up, "RIGHT", 2, 0)
+  panel.down:SetScript("OnClick", function() FA.ScrollBuilds(ROWS - 1) end)
+  panel.more = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  panel.more:SetPoint("LEFT", panel.down, "RIGHT", 6, 0)
+  panel:EnableMouseWheel(true)
+  panel:SetScript("OnMouseWheel", function(_, delta) FA.ScrollBuilds(delta > 0 and -1 or 1) end)
 
   local import = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
   import:SetSize(84, 22)
@@ -133,7 +148,7 @@ StaticPopupDialogs["FOREVERARMOURY_APPLY"] = {
     local build = data and FA.FindBuild(FA.class, data.id)
     if not build then return end
     local ok, said = FA.Apply(build)
-    FA.Print(ok and ("Spent as " .. (build.name ~= "" and build.name or "the build") .. " says: " .. said .. ".") or said)
+    FA.Print(ok and ("Spent as " .. (build.name ~= "" and FA.Esc(build.name) or "the build") .. " says: " .. said .. ".") or said)
     FA.Refresh()
   end,
   timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
@@ -148,7 +163,7 @@ function FA.AskApply()
   if ok then list, why = FA.PlanApply(build) end
   if not list then FA.Print(why); return end
   StaticPopup_Show("FOREVERARMOURY_APPLY", "Spend " .. #list .. (#list == 1 and " point" or " points") .. " as " ..
-    (build.name ~= "" and build.name or "the build") .. " says?\n\n" .. FA.Summary(list, 8), nil, { id = build.id })
+    (build.name ~= "" and FA.Esc(build.name) or "the build") .. " says?\n\n" .. FA.Summary(list, 8), nil, { id = build.id })
 end
 
 --[[ What the panel says about the active build: its next point, or why there isn't one, and what it takes to swap. ]]
@@ -176,6 +191,12 @@ local function statusText(build)
   return table.concat(lines, "\n")
 end
 
+--[[ The list moved by some builds, up (negative) or down, as far as it goes. ]]
+function FA.ScrollBuilds(by)
+  offset = math.max(0, math.min(offset + by, #FA.BuildsFor(FA.class) - ROWS))
+  FA.Refresh()
+end
+
 function FA.Refresh()
   if not panel then return end
   local f = Talents.Frame()
@@ -186,16 +207,25 @@ function FA.Refresh()
   end
   panel:Show()
   local list, active = FA.BuildsFor(FA.class), FA.ActiveBuild()
+  offset = math.max(0, math.min(offset, #list - ROWS))
   for i, row in ipairs(panel.rows) do
-    local b = list[i]
+    local b = list[i + offset]
     row.build = b
     if b then
-      row.text:SetText(b.name ~= "" and b.name or "Unnamed")
+      row.text:SetText(b.name ~= "" and FA.Esc(b.name) or "Unnamed")
       row.mark:SetShown(active == b)
       row:Show()
     else
       row:Hide()
     end
+  end
+  if #list > ROWS then
+    panel.up:Show(); panel.down:Show(); panel.more:Show()
+    if offset > 0 then panel.up:Enable() else panel.up:Disable() end
+    if offset < #list - ROWS then panel.down:Enable() else panel.down:Disable() end
+    panel.more:SetText((offset + 1) .. "-" .. (offset + ROWS) .. " of " .. #list)
+  else
+    panel.up:Hide(); panel.down:Hide(); panel.more:Hide()
   end
   if #list == 0 then
     panel.status:SetText("No builds for this class yet. On the site, Copy for addon, then Import here.")
@@ -208,7 +238,11 @@ function FA.Refresh()
   lightTalent(p and p.next and p.next.talent or nil)
   --[[ Apply says how many points it would spend, or why it can't, before it's pressed. ]]
   local plan, why
-  if active then plan, why = FA.PlanApply(active) else why = "Pick a build to follow first." end
+  if not active then why = "Pick a build to follow first."
+  else
+    local can, combat = Talents.CanChange()
+    if can then plan, why = FA.PlanApply(active) else why = combat end
+  end
   if plan then
     panel.apply:Enable(); panel.apply:SetText("Apply " .. #plan .. (#plan == 1 and " point" or " points")); panel.apply.why = FA.Summary(plan, 8)
   else
@@ -225,8 +259,8 @@ function FA.HookTalentFrame()
   makePanel()
   f:HookScript("OnShow", FA.Refresh)
   f:HookScript("OnHide", FA.Refresh)
-  if f.LoadTalentTreeInternal then hooksecurefunc(f, "LoadTalentTreeInternal", function() Talents.Forget(); FA.Refresh() end) end
-  if f.OnTraitConfigUpdated then hooksecurefunc(f, "OnTraitConfigUpdated", function() Talents.Forget(); FA.Refresh() end) end
+  if f.LoadTalentTreeInternal then hooksecurefunc(f, "LoadTalentTreeInternal", FA.RefreshSoon) end
+  if f.OnTraitConfigUpdated then hooksecurefunc(f, "OnTraitConfigUpdated", FA.RefreshSoon) end
   if TalentFrame_Update then hooksecurefunc("TalentFrame_Update", FA.Refresh) end
   FA.Refresh()
 end
@@ -310,7 +344,7 @@ function FA.ImportText(text)
   local builds, err, notes = FA.Code.Read(text)
   local routes, gerr, gnotes = nil, nil, nil
   if FA.GearCode then routes, gerr, gnotes = FA.GearCode.Read(text) end
-  local hasBuild = tostring(text or ""):find("FAT%d+%-") ~= nil
+  local hasBuild = tostring(text or ""):find("FAT%d%d?%d?%-") ~= nil
   local hasGear = FA.GearCode and FA.GearCode.Find(text)
   if not builds and not routes then
     if hasGear and not hasBuild then err = gerr end
@@ -328,7 +362,7 @@ function FA.ImportText(text)
     --[[ A character with one build and none followed follows it, so the first paste lights a talent straight away. ]]
     if mine > 0 and not FA.ActiveBuild() then
       local list = FA.BuildsFor(FA.class)
-      if #list == 1 then FA.SetActive(list[1].id); said = said .. " Following " .. list[1].name .. "." end
+      if #list == 1 then FA.SetActive(list[1].id); said = said .. " Following " .. FA.Esc(list[1].name) .. "." end
     end
   end
   if routes then
