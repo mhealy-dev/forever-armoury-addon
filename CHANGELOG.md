@@ -1,12 +1,14 @@
 # Changelog
 
-## 0.3.0 (unreleased)
+## 0.4.0 (unreleased)
 
 The leveling gear part (forever-armoury #280, `docs/gear-route.md`):
 
 - **Gear routes from the site**: the Leveling plate's route for a class, spec and side, as a `FAG1-` code pasted into the import box (one paste can hold a build code and a gear code). Routes are kept for the account by class, one per spec and side.
 - **The panel beside the character window**: the pieces of the route to get at your level, each marked when you wear or carry it, then the ones coming, each as the game's item link with where it comes from (the dungeon and boss, or the quest). The route's spec is the heaviest tree of the build you follow, or one picked with the panel's button.
 - `/fa gear` opens the character window with the panel, `/fa gear on|off` is the part's switch, and the settings page has it too.
+
+## 0.3.0 (unreleased)
 
 Fixes before the first release (forever-armoury #1535):
 
