@@ -257,6 +257,9 @@ function Legacy.Progress(plan)
       if x.row ~= y.row then return x.row < y.row end
       return x.col < y.col
     end)
+    --[[ The gate: the points on all the tree's other perks, every rank. The site's legacyBefore (assets/app/legacy.js)
+         counts only the perks with a lower gate; the two agree while the gates are 0, 5 and 10, as in build 70425.
+         Check them again when this table is re-copied for another client build. ]]
     local function ready(i)
       local perk = Legacy.PERKS[i]
       if perk.locked or sim[i] >= out.perks[i].want then return false end
@@ -351,7 +354,8 @@ local function buy(tree, configID, steps)
   committing[configID], calling, failedNow = true, configID, false
   local started = game("C_Traits.CommitConfig", configID)
   calling = nil
-  if not started or failedNow or not committing[configID] then
+  --[[ the game can also answer TRAIT_CONFIG_UPDATED inside the call (Committed clears the flag), which is a success ]]
+  if not started or failedNow then
     if committing[configID] then game("C_Traits.RollbackConfig", configID) end
     committing[configID] = nil
     return false, "The game wouldn't apply the " .. tree.name .. " perks. Nothing was bought in " .. tree.name .. "."

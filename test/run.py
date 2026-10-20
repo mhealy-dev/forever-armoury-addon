@@ -142,7 +142,7 @@ C_Traits = {
 -- perk's max, its prerequisite full first, its need of points on the tree's other perks met (unless begun), a point to
 -- spend (staged ones count), under the cap. LREFUSE is a node the game turns down; LFAIL_COMMIT is false, or true (the
 -- commit says no), or "late" (it starts the cast, the test fails it with CONFIG_COMMIT_FAILED), or "now" (the game fails
--- it inside the call), or a config's number for that tree's commit alone.
+-- it inside the call), or "updated" (it succeeds, and TRAIT_CONFIG_UPDATED comes inside the call), or a config's number for that tree's commit alone.
 LEGACY_ON, LEG, LSTAGED, LPOINTS, LCAP, LREFUSE, LFAIL_COMMIT = false, {}, {}, 16, 16, nil, false
 LCONFIG = { [1187] = 201, [1188] = 202, [1189] = 203 }
 LTREE = { [201] = 1187, [202] = 1188, [203] = 1189 }
@@ -194,6 +194,7 @@ function C_Traits.CommitConfig(configID)
   if LFAIL_COMMIT == "late" then return true end
   if LFAIL_COMMIT == "now" then ON_EVENT(nil, "CONFIG_COMMIT_FAILED", configID); return true end
   if LFAIL_COMMIT == true or LFAIL_COMMIT == configID then return false end
+  if LFAIL_COMMIT == "updated" then ON_EVENT(nil, "TRAIT_CONFIG_UPDATED", configID) end   -- the game answers inside the call, and succeeds
   for node, n in pairs(LSTAGED[configID] or {}) do LEG[node] = (LEG[node] or 0) + n; LPOINTS = LPOINTS and (LPOINTS - n) end
   LSTAGED[configID] = nil
   return true
@@ -1502,6 +1503,8 @@ ForeverArmouryStripPastLow, ForeverArmouryStripPastHigh, ForeverArmouryStripPast
 -- the Legacy window: its tree panel shows one tree (LSHOWN_TREE) and has a button for that tree's perks only, pooled by
 -- node as the talent window's are; LBUTTONS[node] is the button. ToggleLegacySystemUI opens or closes the window.
 LegacySystemFrame = frame("LegacySystemFrame")
+LegacySystemFrame.LegacyRewardTrackTab = frame("LegacyRewardTrackTab")   -- the side tabs hang off the window's right edge
+LegacySystemFrame.LegacyRewardTrackTab.GetWidth = function() return 42 end
 LegacySystemFrame.TreePage = { LegacyTreeTraitPanel = frame("LegacyTreeTraitPanel") }
 LBUTTONS, LSHOWN_TREE = {}, 1187
 LegacySystemFrame.TreePage.LegacyTreeTraitPanel.GetTalentButtonByNodeID = function(self, nodeID)
@@ -2011,6 +2014,18 @@ class Legacy(unittest.TestCase):
         self.assertEqual(self.log()[-1], "rollback 1187")
         self.assertNotIn("Legacy perks, so they were rolled back", L.eval("PRINTED"))   # apply says it, the event doesn't say it twice
         self.assertIsNone(L.eval("LSTAGED[201]"))
+
+    def test_a_commit_the_game_confirms_inside_the_call_is_a_success(self):
+        L.run("LFAIL_COMMIT = 'updated'; PRINTED = ''")
+        ok, said = self.apply(GATHERER)
+        self.assertTrue(ok, said)
+        self.assertEqual(said, "Working Overtime x5, Master Chef, Well Rested x5, Talented, Gourmand x3, The Quick and the Dead")
+        self.assertEqual(self.account(), GATHERER)
+        self.assertEqual([x for x in self.log() if x.startswith("rollback")], [])
+        # and a late failure event after it is the game's, not the addon's
+        L.run("EVENT('CONFIG_COMMIT_FAILED', 201)")
+        self.assertEqual([x for x in self.log() if x.startswith("rollback")], [])
+        self.assertNotIn("Legacy perks", L.eval("PRINTED"))
 
     def test_apply_refuses_in_combat(self):
         L.run("COMBAT = true")
@@ -2607,6 +2622,8 @@ class UI(unittest.TestCase):
         # it sits beside the Legacy window
         self.assertTrue(L.eval("ForeverArmouryLegacyPanel.points[1][2] == LegacySystemFrame"))
         self.assertEqual(L.eval("ForeverArmouryLegacyPanel.points[1][3]"), "TOPRIGHT")
+        # and clear of the window's side tabs, which are 42 wide here and start at its edge
+        self.assertGreaterEqual(L.eval("ForeverArmouryLegacyPanel.points[1][4]"), 42)
 
     def test_import_follow_light_and_apply_a_legacy_plan(self):
         L.run("LEGACY_ON = true")

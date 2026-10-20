@@ -2,7 +2,8 @@
      demand), the account's Legacy plans, the plan it follows with each perk's ranks had and wanted, the points available
      against the seasonal cap, and an Apply that buys what's next. Legacy.lua says what that is and does the buying; the
      next perk of each tree is lit in the window's tree with the talent window's glow (TalentUI.lua's FA.LightButtons),
-     and only when the tree shows its button: the window shows one tree at a time. ]]
+     and only when the tree shows its button: the window shows one tree at a time. The panel sits past the window's side
+     tabs, which are how the person gets to the trees page. ]]
 
 local _, FA = ...
 local Legacy = FA.Legacy
@@ -13,6 +14,7 @@ local TEMPLATE = BackdropTemplateMixin and "BackdropTemplate" or nil
 local WIDTH = 230
 local PLAN_ROWS, PERK_ROWS = 5, 12   -- plans shown at once (the list scrolls past them), perks shown (the rest are counted)
 local PLAN_Y, PERK_H = 160, 16
+local TAB_WIDTH = 40   -- the Legacy window's side tabs, when the game won't say how wide they are
 local GREEN, GOLD, GREY, RED = "|cff40ff40", "|cffffd100", "|cff909090", "|cffff6060"
 local TREE_PAGE = 3   -- LegacySystemFrame.Pages: the reward track, the challenges, then the trees
 local panel, hooked
@@ -28,7 +30,12 @@ local function makePanel()
   local window = _G.LegacySystemFrame or UIParent
   panel = CreateFrame("Frame", "ForeverArmouryLegacyPanel", window, TEMPLATE)
   panel:SetSize(WIDTH, 460)
-  if window == UIParent then panel:SetPoint("CENTER") else panel:SetPoint("TOPLEFT", window, "TOPRIGHT", -2, -20) end
+  --[[ the window's side tabs (the reward track, the challenges and the trees) hang off its right edge from y = -60
+       down, so the panel starts past them: the width of one, read now, else about 40 ]]
+  local tab = window ~= UIParent and window.LegacyRewardTrackTab
+  local tabWidth = type(tab) == "table" and tab.GetWidth and tonumber(tab:GetWidth()) or 0
+  if tabWidth <= 0 then tabWidth = TAB_WIDTH end
+  if window == UIParent then panel:SetPoint("CENTER") else panel:SetPoint("TOPLEFT", window, "TOPRIGHT", tabWidth, -20) end
   panel:SetBackdrop(BACKDROP)
   panel:SetFrameStrata("HIGH")
   panel:SetClampedToScreen(true)
