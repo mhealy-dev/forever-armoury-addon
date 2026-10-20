@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 (unreleased)
+
+The Talented rank in the build code (forever-armoury #1540):
+
+- **`FAT3-` codes**: each build ends with its rank of the Legacy perk Talented, one digit 0 to 5 (`FAT3-70170-warrior-Arms%20PvP-0a0a0a0b0b0b1c1c-3`), as the site now writes them. `FAT1-` and `FAT2-` codes still read, with rank 0. A rank that isn't 0 to 5 is refused with a sentence, as the site does.
+- **Import keeps the rank** with the saved build, and Export writes a `FAT3-` code with each build's rank. A build from a `FAT1-` or `FAT2-` code exports with rank 0 (a `FAT1-` build's game build is written as 0, which the site reads as the first trees).
+- **The first point's level** is 10 minus the rank the game says, as before; when the game won't say (the Legacy config can't be read) the build's own rank is used, and 10 when neither is known. `/fa debug` says which rank is in use and where it came from.
+
 ## 0.4.0 (unreleased)
 
 Small fixes after the first release (forever-armoury #1539):

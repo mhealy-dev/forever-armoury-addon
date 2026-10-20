@@ -1,8 +1,9 @@
 --[[ The saved builds, the character's active one, where the character is on it, and what Apply and Swap do.
 
-     FA.db.builds[class] is a list of { id, name, picks, build }: every build imported on this account, by class, with
-     the game build its picks are from (false for a FAT1- code's, from before codes carried it), and FA.char.build is
-     the id of the one this character follows. A build's points name a tree and a cell; Talents.lua
+     FA.db.builds[class] is a list of { id, name, picks, build, talented }: every build imported on this account, by
+     class, with the game build its picks are from (false for a FAT1- code's, from before codes carried it) and the
+     build's own rank of the Legacy perk Talented (0 to 5; nil for a build kept before codes carried it, which is
+     written as 0), and FA.char.build is the id of the one this character follows. A build's points name a tree and a cell; Talents.lua
      says which of the game's talents sits there, so the addon ships no talent data. ]]
 
 local _, FA = ...
@@ -35,6 +36,7 @@ function FA.RepairBuilds()
           if type(b.name) ~= "string" then b.name = ""; fixed = true end
           if type(b.id) ~= "number" or seen[b.id] then b.id = nil; fixed = true else seen[b.id] = true end
           if b.build ~= nil and b.build ~= false and type(b.build) ~= "number" then b.build = nil; fixed = true end
+          if b.talented ~= nil and not (type(b.talented) == "number" and b.talented % 1 == 0 and b.talented >= 0 and b.talented <= 5) then b.talented = nil; fixed = true end
           if fixed then repaired = repaired + 1 end
           kept[#kept + 1] = b
         end
@@ -52,9 +54,9 @@ function FA.RepairBuilds()
   return dropped, repaired
 end
 
---[[ Keeps the builds a code gave (FA.Code.Read), each with the game build it's from, so Export gives it back as it
-     came. A build with the name and points of one already kept for its class updates that one's game build and keeps
-     its id, so pasting a build again, as the site has it now, leaves the characters following it on it; a build with
+--[[ Keeps the builds a code gave (FA.Code.Read), each with the game build it's from and its Talented rank, so Export
+     gives it back as it came (a FAT1- or FAT2- code's builds have rank 0). A build with the name and points of one
+     already kept for its class updates that one's game build and rank and keeps its id, so pasting a build again, as the site has it now, leaves the characters following it on it; a build with
      the same name and other points is another build (two Arms, two unnamed). Answers how many were for this
      character's class, and how many for others. ]]
 function FA.AddBuilds(builds)
@@ -63,9 +65,9 @@ function FA.AddBuilds(builds)
     local list, found = FA.BuildsFor(b.cls), nil
     for _, old in ipairs(list) do if old.name == b.name and old.picks == b.picks then found = old end end
     local build = b.build or false
-    if found then found.build = build
+    if found then found.build, found.talented = build, b.talented
     else
-      list[#list + 1] = { id = FA.db.nextId, name = b.name, picks = b.picks, build = build }
+      list[#list + 1] = { id = FA.db.nextId, name = b.name, picks = b.picks, build = build, talented = b.talented }
       FA.db.nextId = FA.db.nextId + 1
     end
     if b.cls == FA.class then mine = mine + 1 else others = others + 1 end
@@ -94,17 +96,18 @@ function FA.SetActive(id) FA.char.build = id end
 
 --[[ The code for every build of this character's class with points, for the site's Import box; nil when there are none.
      A code carries one game build, so builds from different ones are a code each, a line each, in the order the
-     first of each comes; the site reads every code in a paste. A build kept before builds were (nil) is the game's. ]]
+     first of each comes; the site reads every code in a paste. A build kept before builds were (nil) is the game's.
+     Every code is a FAT3- one, a FAT1- build's with game build 0; a build with no rank is written with 0. ]]
 function FA.ExportCode()
   local groups, byBuild = {}, {}
   for _, b in ipairs(FA.BuildsFor(FA.class)) do
     if b.picks ~= "" then
       local build = b.build
       if build == nil then build = FA.Code.GameBuild() end
-      local key = build == false and "FAT1" or build
+      local key = build == false and "none" or build
       if not byBuild[key] then byBuild[key] = { build = build, builds = {} }; groups[#groups + 1] = byBuild[key] end
       local list = byBuild[key].builds
-      list[#list + 1] = { cls = FA.class, name = b.name, picks = b.picks }
+      list[#list + 1] = { cls = FA.class, name = b.name, picks = b.picks, talented = b.talented }
     end
   end
   if #groups == 0 then return nil end
@@ -120,7 +123,7 @@ function FA.PointsAfterReset(build)
   local points = FA.Code.Points(build.picks)
   if not points then return nil end
   local unspent = FA.Talents.Unspent()
-  local total = unspent and FA.Talents.Ready() and (FA.Talents.Spent() + unspent) or math.max(0, (UnitLevel("player") or 1) - FA.FirstLevel() + 1)
+  local total = unspent and FA.Talents.Ready() and (FA.Talents.Spent() + unspent) or math.max(0, (UnitLevel("player") or 1) - FA.FirstLevel(build) + 1)
   return math.min(#points, total)
 end
 
@@ -139,7 +142,7 @@ function FA.Progress(build, view)
   view = view or FA.Talents.View()
   if not view then return nil, "The game hasn't given its talents yet. Open the talent window and try again." end
   local planned, byKey, taken, left = {}, {}, 0, {}
-  local first = FA.FirstLevel()
+  local first = FA.FirstLevel(build)
   for n, p in ipairs(points) do
     local t = FA.Talents.At(p.tab, p.cell, view)
     if not t then return nil, "A talent in this build isn't in your talent trees. The site may be newer than this addon." end
