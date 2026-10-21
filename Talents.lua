@@ -16,7 +16,7 @@
      node names it to the game (a node id, or a talent index). From the trait system a talent also has x and y, its
      node's position and spell, its definition's spell id (the strip's tooltip shows it), and the view has grid, each tree's { colStep, rowStep, originX, topY } it was sorted by, and
      dropped, each tree's nodes that didn't sort into a cell of their own: { { talent, why }, ... }. A node of the trait system
-     is read whatever its maxRanks (the Forever client gives 0 for many): max is maxRanks, else totalMaxRanks, else its
+     is read whatever its maxRanks (one that answers 0 falls back): max is maxRanks, else totalMaxRanks, else its
      entry's, else nil; a node's tree is whichever of its groupIDs (the live client gives 3 to 7) is one of the trees' groups,
      and a node with none goes to a tree by its x. The view also has
      skipped, the nodes not read ({ info, skip } for a node the window skips too) and byPosition, each tree's count of
@@ -164,7 +164,7 @@ Talents.UNKNOWN_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
 function Talents.Icon(t) return t and t.icon or Talents.UNKNOWN_ICON end
 
 --[[ ---- the trait system (the Forever client) ---- ]]
---[[ A talent's rank count. The Forever client's nodes don't all give maxRanks (some answer 0), so the count is maxRanks
+--[[ A talent's rank count. The beta's nodes give maxRanks above 0; one that answers 0 falls back, so the count is maxRanks
      when it's above 0, else totalMaxRanks, else the first entry's maxRanks; nil when none says (the cell is drawn with
      a "?" where the count goes). ]]
 local function maxRankOf(configID, node)
@@ -176,52 +176,76 @@ local function maxRankOf(configID, node)
   return nil
 end
 
+--[[ The x values, split into `runs` runs at the widest gaps between them: the x each run after the first starts at. ]]
+local function cutsFor(xs, runs)
+  local seen, distinct = {}, {}
+  for _, x in ipairs(xs) do if not seen[x] then seen[x] = true; distinct[#distinct + 1] = x end end
+  table.sort(distinct)
+  local gaps = {}
+  for i = 2, #distinct do gaps[#gaps + 1] = { size = distinct[i] - distinct[i - 1], at = distinct[i] } end
+  table.sort(gaps, function(a, b) return a.size > b.size end)
+  local cuts = {}
+  for i = 1, math.min(runs - 1, #gaps) do cuts[#cuts + 1] = gaps[i].at end
+  table.sort(cuts)
+  return cuts
+end
+local function runOf(cuts, x)
+  local run = 1
+  for _, at in ipairs(cuts) do if x >= at then run = run + 1 end end
+  return run
+end
+
 --[[ A tree for each node recs still has no tree for, by where it sits. The trees are thousands of x apart and a tree's
      columns 600, so the nodes that do have a group say each tree's x range, and a node without one goes to the tree
-     whose range it falls in, else the nearest. When no node has a group, the x values are split into one run per tree
-     at the widest gaps, left to right in the trees' order. Each rec says why it went where. ]]
+     whose range it falls in, else the nearest. A tree is four columns wide at most, so a node that would stretch a
+     tree's range past that is not of it: when some tree has no node with a group, such nodes go to the trees without a
+     range, split into one run per tree at the widest gaps, left to right. When no node has a group, the x values are
+     split that way into one run per tree. Each rec says why it went where. ]]
 local function placeByPosition(recs, count)
-  local lo, hi = {}, {}
+  local lo, hi, xs = {}, {}, {}
   for _, r in ipairs(recs) do
+    if not r.skip then xs[#xs + 1] = r.info.posX end
     if r.tab then
       local x = r.info.posX
       lo[r.tab], hi[r.tab] = math.min(lo[r.tab] or x, x), math.max(hi[r.tab] or x, x)
     end
   end
-  local cuts
-  if next(lo) == nil then
-    local seen, xs = {}, {}
-    for _, r in ipairs(recs) do
-      if not r.skip and not seen[r.info.posX] then seen[r.info.posX] = true; xs[#xs + 1] = r.info.posX end
-    end
-    table.sort(xs)
-    local gaps = {}
-    for i = 2, #xs do gaps[#gaps + 1] = { size = xs[i] - xs[i - 1], at = xs[i] } end
-    table.sort(gaps, function(a, b) return a.size > b.size end)
-    cuts = {}
-    for i = 1, math.min(count - 1, #gaps) do cuts[#cuts + 1] = gaps[i].at end
-  end
+  local rangeless = {}
+  for t = 1, count do if not lo[t] then rangeless[#rangeless + 1] = t end end
+  local step = pitch(xs)
+  local width = (step or 0) * 3   -- the widest a tree's four columns go
+  local outside = {}
   for _, r in ipairs(recs) do
     if not r.tab and not r.skip then
       local x = r.info.posX
       local groups = r.info.groupIDs and #r.info.groupIDs or 0
-      local lack = (groups > 0 and (groups == 1 and "its group is not one of the tree's" or "none of its " .. groups .. " groups is one of the tree's") or "no group")
-      if cuts then
-        r.tab = 1
-        for _, at in ipairs(cuts) do if x >= at then r.tab = r.tab + 1 end end
-        r.why = lack .. ", and no node has one: split by the widest gaps in x"
-      else
-        local best, away
-        for t = 1, count do
-          if lo[t] then
-            local d = x < lo[t] and lo[t] - x or x > hi[t] and x - hi[t] or 0
-            if not away or d < away then best, away = t, d end
-          end
-        end
-        r.tab = best
-        r.why = lack .. ", so by x: " .. (away == 0 and "within" or "nearest to") .. " " .. num(lo[best]) .. " to " .. num(hi[best])
-      end
+      r.lack = (groups > 0 and (groups == 1 and "its group is not one of the trees'" or "none of its " .. groups .. " groups is one of the trees'") or "no group")
       r.byPosition = true
+      local best, away
+      for t = 1, count do
+        if lo[t] and (#rangeless == 0 or math.max(hi[t], x) - math.min(lo[t], x) <= width) then
+          local d = x < lo[t] and lo[t] - x or x > hi[t] and x - hi[t] or 0
+          if not away or d < away then best, away = t, d end
+        end
+      end
+      if best then
+        r.tab = best
+        r.why = r.lack .. ", so by x: " .. (away == 0 and "within" or "nearest to") .. " " .. num(lo[best]) .. " to " .. num(hi[best])
+      else
+        outside[#outside + 1] = r
+      end
+    end
+  end
+  --[[ the nodes no range takes: the trees without one, in order (all the trees, when no node has a group) ]]
+  if #outside > 0 then
+    local targets = #rangeless > 0 and rangeless or {}
+    if #targets == 0 then for t = 1, count do targets[t] = t end end
+    local ox = {}
+    for i, r in ipairs(outside) do ox[i] = r.info.posX end
+    local cuts = cutsFor(ox, #targets)
+    for _, r in ipairs(outside) do
+      r.tab = targets[runOf(cuts, r.info.posX)]
+      r.why = r.lack .. ", and " .. (next(lo) == nil and "no node has one" or ("no node of tree " .. r.tab .. " has one")) .. ": split by the widest gaps in x"
     end
   end
 end
@@ -515,7 +539,7 @@ function Talents.Dump()
     end
   end
   for _, r in ipairs(v.skipped or {}) do
-    lines[#lines + 1] = "left unread: node " .. tostring(r.info.ID) .. " at " .. (r.info.posX and (num(r.info.posX) .. "," .. num(r.info.posY)) or "no position") .. ": " .. r.skip
+    lines[#lines + 1] = "left unread: node " .. tostring(r.info.ID) .. ((r.info.posX and r.info.posY) and (" at " .. num(r.info.posX) .. "," .. num(r.info.posY)) or "") .. ": " .. r.skip
   end
   if v.grid then
     lines[#lines + 1] = left == 0 and "Every talent has a cell of its own." or (left .. (left == 1 and " talent" or " talents") .. " left out, marked above.")
