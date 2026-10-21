@@ -210,7 +210,8 @@ end
 function FA.RefreshGear()
   if not panel then return end
   local window = CharacterFrame
-  if not FA.PartOn("gear") or (window and not window:IsShown()) then panel:Hide(); return end
+  FA.SyncWindowButton("gear")
+  if not FA.PanelWanted("gear") or (window and not window:IsShown()) then panel:Hide(); return end
   panel:Show()
   for _, row in ipairs(panel.rows) do row.piece = false end
   local spec, how = Gear.Spec()
@@ -252,6 +253,7 @@ function FA.HookCharacterFrame()
   hooked = true
   makePanel()
   if CharacterFrame then
+    FA.WindowButton("gear", CharacterFrame)
     CharacterFrame:HookScript("OnShow", FA.RefreshGear)
     CharacterFrame:HookScript("OnHide", FA.RefreshGear)
   end
@@ -264,8 +266,13 @@ function FA.HookCharacterFrame()
   FA.RefreshGear()
 end
 
---[[ /fa gear: the character window, with the panel beside it. ]]
+--[[ /fa gear: the character window, with the panel beside it. A panel that was put away comes back: on the window that is
+     open, or with the window as it opens. ]]
 function FA.ToggleGear()
+  if not FA.PanelShown("gear") then
+    if CharacterFrame and CharacterFrame:IsShown() then FA.SetPanelShown("gear", true); return end
+    FA.db.shown.gear = true
+  end
   if ToggleCharacter then ToggleCharacter("PaperDollFrame") end
   FA.RefreshGear()
 end

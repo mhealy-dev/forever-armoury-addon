@@ -2,6 +2,13 @@
 
 ## 0.5.2 (unreleased)
 
+A button on each window puts the addon's panel away and brings it back (forever-armoury #1604):
+
+- **A small square button, "FA", at the top right of the talent window, the character window and the Legacy window**, left of the window's own close button (its `CloseButton` field, else the global it is known by, such as `CharacterFrameCloseButton`; at the window's top right when there is none). Its tooltip is "Forever Armoury — hide the level plan" (or "the leveling gear", "the Legacy plan"), or "show" when the panel is put away. A click puts the panel and its strip away together, and the next click brings them back. The button is lit gold while the panel is out. The choice is the account's and survives a reload (`shown` in the saved variables, one flag a part, out to start with).
+- **A part that is off** still shows its button; a click turns the part on and shows the panel, so a new player finds the panel without a command.
+- **The commands and switches work as they did.** `/fa plan on`, `/fa gear on`, `/fa legacy on` and the options page's switches also bring a panel back; `/fa`, `/fa gear` and `/fa legacy` bring back a panel that was put away (on the window if it is open, else with the window as it opens) instead of closing the window.
+- What only the beta can show: where the button sits against each window's close button and art (the addon ships no icon, so it is text), and the close buttons' names on the three windows.
+
 The strip's icons keep their places while it scrolls (forever-armoury #1601):
 
 - **Fixed slots.** The strip is a column of slots of one pitch, an icon, the row under it for the **Now** or level label (kept whether or not the icon has one) and a gap of 4: 63 px at the 44 px icon size. Slot *n* is at the same distance from the strip's top at every scroll position, so the wheel moves the icons one slot and nothing else shifts. Before, the next icon's label, the gap after the points taken and the **⋮** took room only when in view, so the column reflowed as it scrolled and the last page sat higher.

@@ -1872,6 +1872,7 @@ frame = function(name)
   return setmetatable(f, { __index = function(t, k)
     if ANSWERS[k] ~= nil then return function() return ANSWERS[k] end end
     if k == "IsShown" then return function(self) return rawget(self, "shown") ~= false end end
+    if k == "GetName" then return function(self) return rawget(self, "name") end end
     if k == "SetText" then return keep("text") end
     if k == "SetAlpha" then return keep("alpha") end
     if k == "SetDesaturated" then return keep("desaturated") end
@@ -1976,6 +1977,10 @@ ToggleLegacySystemUI = function()
   if LegacySystemFrame.shown == false then LegacySystemFrame:Show() else LegacySystemFrame:Hide() end
 end
 CharacterFrame = frame("CharacterFrame")
+-- the windows' own close buttons, as the client names them: the talent window's is a field (CloseButton), the character
+-- window's a global (CharacterFrameCloseButton), and the Legacy window's is nowhere (the button falls back to its top right)
+PlayerSpellsFrame.CloseButton = frame("PlayerSpellsFrameCloseButton")
+CharacterFrameCloseButton = frame("CharacterFrameCloseButton")
 ToggleCharacter = function() TOGGLED = (TOGGLED or 0) + 1 end
 """
 
@@ -3736,6 +3741,155 @@ class UI(unittest.TestCase):
         self.assertIn("Leveling gear off.", L.eval("PRINTED"))
         self.assertIn("The leveling gear part is off.", L.eval("PRINTED"))
         self.assertEqual(L.eval("TOGGLED"), 1)   # the second /fa gear found the part off
+
+    # ---- the button on each window (forever-armoury#1604)
+    BUTTONS_OF = {"plan": ("ForeverArmouryPlanButton", "ForeverArmouryTalentPanel", "PlayerSpellsFrame"),
+                  "gear": ("ForeverArmouryGearButton", "ForeverArmouryGearPanel", "CharacterFrame"),
+                  "legacy": ("ForeverArmouryLegacyButton", "ForeverArmouryLegacyPanel", "LegacySystemFrame")}
+
+    def press(self, key):
+        L.run("local b = %s; b.scripts.OnClick(b)" % self.BUTTONS_OF[key][0])
+
+    def out(self, key):
+        """Whether the part's panel and its button's lit wash are shown."""
+        return L.eval("%s.shown" % self.BUTTONS_OF[key][1]), L.eval("%s.lit.shown" % self.BUTTONS_OF[key][0])
+
+    def test_each_hooked_window_has_a_small_square_button(self):
+        for key, (button, _, window) in self.BUTTONS_OF.items():
+            self.assertTrue(L.eval("%s.parent == %s" % (button, window)), key)
+            self.assertEqual((L.eval("%s.width" % button), L.eval("%s.height" % button), L.eval("%s.label.text" % button)), (20, 20, "FA"), key)
+            self.assertEqual(L.eval("#%s.points" % button), 1, key)
+        # left of the window's own close button, from its field or from its global, else at the window's top right
+        self.assertEqual(L.eval("PlayerSpellsFrame.CloseButton == ForeverArmouryPlanButton.points[1][2] and ForeverArmouryPlanButton.points[1][3]"), "LEFT")
+        self.assertEqual(L.eval("ForeverArmouryPlanButton.points[1][1]"), "RIGHT")
+        self.assertEqual(L.eval("CharacterFrameCloseButton == ForeverArmouryGearButton.points[1][2] and ForeverArmouryGearButton.points[1][3]"), "LEFT")
+        self.assertEqual(L.eval("ForeverArmouryGearButton.points[1][1]"), "RIGHT")
+        self.assertEqual(L.eval("ForeverArmouryLegacyButton.points[1][1]"), "TOPRIGHT")
+        self.assertEqual(L.eval("ForeverArmouryLegacyButton.points[1][2] == LegacySystemFrame"), True)
+        # drawn at the close button's frame level, the window's plus a margin without one
+        self.assertEqual(L.eval("ForeverArmouryPlanButton.level"), 1)
+        self.assertEqual(L.eval("ForeverArmouryLegacyButton.level"), 11)
+
+    def test_a_button_is_made_once_per_window(self):
+        before = L.eval("ForeverArmouryGearButton")
+        L.run("FA.WindowButton('gear', CharacterFrame)")
+        self.assertTrue(L.eval("function(b) return ForeverArmouryGearButton == b end")(before))
+
+    def test_a_click_puts_the_panel_away_and_brings_it_back(self):
+        for key in self.BUTTONS_OF:
+            self.assertEqual(L.eval("FA.PanelShown('%s')" % key), True, key)   # shown unless put away
+            self.assertEqual(self.out(key), (True, True), key)
+            self.press(key)
+            self.assertEqual(L.eval("FA.db.shown.%s" % key), False, key)
+            self.assertEqual(self.out(key), (False, False), key)
+            self.press(key)
+            self.assertEqual(L.eval("FA.db.shown.%s" % key), True, key)
+            self.assertEqual(self.out(key), (True, True), key)
+
+    def test_each_part_has_its_own_flag(self):
+        self.press("gear")
+        self.assertEqual([L.eval("FA.PanelShown('%s')" % k) for k in ("plan", "gear", "legacy")], [True, False, True])
+        self.assertEqual([self.out(k)[0] for k in ("plan", "gear", "legacy")], [True, False, True])
+
+    def test_a_panel_put_away_stays_away_on_a_refresh_and_a_window_that_shows_again(self):
+        for key in self.BUTTONS_OF:
+            self.press(key)
+        L.run("FA.Refresh(); FA.RefreshGear(); FA.RefreshLegacy(); FA.RefreshSoon(); FLUSH()")
+        for key in self.BUTTONS_OF:
+            self.assertEqual(self.out(key), (False, False), key)
+        self.assertFalse(L.eval("ForeverArmouryTalentStrip.shown"))
+        self.assertFalse(L.eval("ForeverArmouryLegacyStrip.shown"))
+        L.run("for _, fn in ipairs(HOOKS) do pcall(fn) end")   # the windows' OnShow and OnHide hooks
+        for key in self.BUTTONS_OF:
+            self.assertEqual(self.out(key), (False, False), key)
+        # and the buttons stay, whatever the panels do
+        self.assertTrue(L.eval("ForeverArmouryPlanButton.shown ~= false and ForeverArmouryGearButton.shown ~= false and ForeverArmouryLegacyButton.shown ~= false"))
+
+    def test_the_panel_comes_back_with_its_strip(self):
+        L.eval("function(c) SlashCmdList.FOREVERARMOURY(c) end")("")   # no build: no strip to show; only the panel is checked
+        self.press("plan")
+        self.press("plan")
+        self.assertEqual(self.out("plan"), (True, True))
+        L.run("FA.ImportText('FAL1-70425-Gatherers-" + SAMPLE_RANKS + "'); FA.Legacy.SetActive(FA.Legacy.Plans()[1].id); LEGACY_ON = true; LSET({}); FA.RefreshLegacy()")
+        self.press("legacy")
+        self.assertFalse(L.eval("ForeverArmouryLegacyStrip.shown"))
+        self.press("legacy")
+        self.assertTrue(L.eval("ForeverArmouryLegacyPanel.shown"))
+
+    def test_a_click_with_the_part_off_turns_it_on_and_shows_the_panel(self):
+        for key in self.BUTTONS_OF:
+            L.run("FA.SetPart('%s', false)" % key)
+            self.assertEqual(self.out(key), (False, False), key)
+            self.assertTrue(L.eval("ForeverArmouryPlanButton.shown ~= false and ForeverArmouryGearButton.shown ~= false and ForeverArmouryLegacyButton.shown ~= false"))
+            self.press(key)
+            self.assertTrue(L.eval("FA.PartOn('%s')" % key), key)
+            self.assertEqual(self.out(key), (True, True), key)
+        # a part off and its panel put away: one click brings the panel
+        L.run("FA.SetPanelShown('gear', false); FA.db.parts.gear = false; FA.RefreshAll()")
+        self.press("gear")
+        self.assertEqual((L.eval("FA.PartOn('gear')"), self.out("gear")), (True, (True, True)))
+
+    def test_the_part_switches_still_work_and_bring_a_panel_back(self):
+        self.press("plan")
+        L.run("FA.SetPart('plan', false)")
+        self.assertEqual(self.out("plan"), (False, False))
+        L.run("FA.SetPart('plan', true)")
+        self.assertEqual(self.out("plan"), (True, True))
+        self.press("legacy")
+        L.eval("function(c) SlashCmdList.FOREVERARMOURY(c) end")("legacy on")
+        self.assertEqual(self.out("legacy"), (True, True))
+
+    def test_the_tooltip_names_the_addon_and_what_a_click_does(self):
+        names = {"plan": "the level plan", "gear": "the leveling gear", "legacy": "the Legacy plan"}
+        L.run("GameTooltip.IsOwned = function(_, f) return TIP.owner == f end")   # an earlier test leaves it false
+        for key, (button, _, _) in self.BUTTONS_OF.items():
+            L.run("local b = %s; b.scripts.OnEnter(b)" % button)
+            self.assertEqual(L.eval("TIP.owner == %s" % button), True)
+            self.assertEqual(L.eval("TIP.text"), "Forever Armoury \u2014 hide " + names[key], key)
+            L.run("local b = %s; b.scripts.OnClick(b)" % button)   # the tooltip is up: it says what the next click does
+            self.assertEqual(L.eval("TIP.text"), "Forever Armoury \u2014 show " + names[key], key)
+            L.run("FA.SetPart('%s', false)" % key)
+            L.run("local b = %s; b.scripts.OnEnter(b)" % button)
+            self.assertEqual(L.eval("TIP.text"), "Forever Armoury \u2014 show " + names[key], key)   # the part off: a click turns it on
+            L.run("local b = %s; b.scripts.OnLeave(b)" % button)
+            self.assertFalse(L.eval("TIP.shown"))
+
+    def test_slash_gear_and_legacy_bring_a_panel_back(self):
+        say = L.eval("function(c) SlashCmdList.FOREVERARMOURY(c) end")
+        # the window open, the panel put away: the command brings it back and leaves the window
+        self.press("gear")
+        L.run("TOGGLED = 0")
+        say("gear")
+        self.assertEqual((L.eval("TOGGLED"), self.out("gear")), (0, (True, True)))
+        say("gear")   # out: the command is the window's toggle, as it was
+        self.assertEqual(L.eval("TOGGLED"), 1)
+        self.press("legacy")
+        L.run("LTOGGLED = 0; LegacySystemFrame:Show()")
+        say("legacy")
+        self.assertEqual((L.eval("LTOGGLED"), self.out("legacy")), (0, (True, True)))
+        # the window shut, the panel put away: the command opens the window and the panel comes with it
+        self.press("legacy")
+        L.run("LegacySystemFrame:Hide()")
+        say("legacy")
+        self.assertEqual((L.eval("LTOGGLED"), L.eval("LegacySystemFrame.shown"), L.eval("FA.PanelShown('legacy')")), (1, True, True))
+        L.run("FA.SetPanelShown('plan', false); TOGGLED_TALENTS = 0; PlayerSpellsUtil = { ToggleClassTalentFrame = function() TOGGLED_TALENTS = TOGGLED_TALENTS + 1 end }")
+        say("")
+        self.assertEqual((L.eval("TOGGLED_TALENTS"), self.out("plan")), (0, (True, True)))
+        L.run("PlayerSpellsUtil = nil")
+
+    def test_the_flag_is_saved_and_filled_in_for_an_older_save(self):
+        self.press("plan")
+        self.assertEqual(L.eval("ForeverArmouryDB.shown.plan"), False)
+        L.run("FA.Init()")   # a reload: the saved variables are read again
+        self.assertEqual([L.eval("FA.PanelShown('%s')" % k) for k in ("plan", "gear", "legacy")], [False, True, True])
+        L.run("ForeverArmouryDB.shown = nil; FA.Init()")   # saved by a version without the flag
+        self.assertEqual([L.eval("FA.PanelShown('%s')" % k) for k in ("plan", "gear", "legacy")], [True, True, True])
+        L.run("ForeverArmouryDB.shown = 'x'; FA.Init()")
+        self.assertEqual(L.eval("FA.db.shown.legacy"), True)
+
+    def test_a_button_for_something_that_is_not_a_part_is_refused(self):
+        L.run("MADE = FA.WindowButton('nowhere', CharacterFrame)")
+        self.assertIsNone(L.eval("MADE"))   # not a part
 
     # ---- the gear panel
     def gear(self):

@@ -367,7 +367,8 @@ end
 function FA.RefreshLegacy()
   if not panel then return end
   local f = _G.LegacySystemFrame
-  if not FA.PartOn("legacy") or (f and not f:IsShown()) then
+  FA.SyncWindowButton("legacy")
+  if not FA.PanelWanted("legacy") or (f and not f:IsShown()) then
     panel:Hide()
     if strip then strip:Hide() end
     FA.LightButtons(glows, {})
@@ -470,6 +471,7 @@ function FA.HookLegacyFrame()
   if not f then return end
   hooked = true
   makePanel()
+  FA.WindowButton("legacy", f)
   f:HookScript("OnShow", FA.RefreshLegacy)
   f:HookScript("OnHide", FA.RefreshLegacy)
   if EventRegistry and EventRegistry.RegisterCallback then
@@ -480,11 +482,15 @@ function FA.HookLegacyFrame()
   FA.RefreshLegacy()
 end
 
---[[ /fa legacy: the game's Legacy window, on its trees, with the panel beside it. The game opens it only once the
+--[[ /fa legacy: the game's Legacy window, on its trees, with the panel beside it (a panel put away comes back). The game opens it only once the
      Legacy track has begun, and has no opener for it besides ToggleLegacySystemUI (Blizzard_LegacySystem's bootstrap,
      which loads the window). ]]
 function FA.ToggleLegacy()
   local was = _G.LegacySystemFrame and _G.LegacySystemFrame:IsShown()
+  if not FA.PanelShown("legacy") then   -- a panel put away comes back: on the open window, or with the window as it opens
+    if was then FA.SetPanelShown("legacy", true); return end
+    FA.db.shown.legacy = true
+  end
   if type(ToggleLegacySystemUI) == "function" then ToggleLegacySystemUI()
   elseif _G.LegacySystemFrame then ToggleFrame(_G.LegacySystemFrame)
   else FA.Print("This client has no Legacy window to open."); return end

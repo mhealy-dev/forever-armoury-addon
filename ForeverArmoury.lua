@@ -15,7 +15,7 @@
        Legacy.lua      the account's Legacy plans, where it is on one, and what Apply buys in the three Legacy trees (FA.Legacy)
        LegacyUI.lua    the strip and the panel beside the game's Legacy window listing them
 
-     Saved variables: ForeverArmouryDB for the account (every build and gear route, by class, every Legacy plan, whether the Legacy panel's plan list is open, and the parts' switches)
+     Saved variables: ForeverArmouryDB for the account (every build and gear route, by class, every Legacy plan, whether the Legacy panel's plan list is open, the parts' switches, and shown, whether each part's panel is out or put away)
      and ForeverArmouryCharDB for the character (which build it follows, whether the panel's build list is open, and the
      spec it chose for its gear route). Besides the parts' switches the account has strip, where the strips start and how big their icons are. ]]
 
@@ -60,16 +60,16 @@ function FA.FirstLevel(build) return FA.FIRST_LEVEL - (FA.TalentedRank(build)) e
 --[[ The addon's parts, each with its own switch (FA.PartOn). The level plan and the leveling gear are the first;
      BIS lists, macros and the UI layout may follow. A part that is off draws nothing and hooks nothing it can avoid. ]]
 FA.PARTS = {
-  { key = "plan", name = "Level plan", text = "Your builds beside the talent window, with the next talent to take" },
-  { key = "gear", name = "Leveling gear", text = "The site's gear route beside the character window: the pieces to get at your level, and where" },
-  { key = "legacy", name = "Legacy plans", text = "The site's Legacy plan beside the Legacy window: a strip of its ranks, the perks still to buy, and Apply buying them" },
+  { key = "plan", name = "Level plan", panel = "the level plan", text = "Your builds beside the talent window, with the next talent to take" },
+  { key = "gear", name = "Leveling gear", panel = "the leveling gear", text = "The site's gear route beside the character window: the pieces to get at your level, and where" },
+  { key = "legacy", name = "Legacy plans", panel = "the Legacy plan", text = "The site's Legacy plan beside the Legacy window: a strip of its ranks, the perks still to buy, and Apply buying them" },
 }
 
 --[[ Where the strips beside the talent window and the Legacy window start their view: the points taken above the next, and the points coming kept in
      view after it. And the size of its icons, in pixels. ]]
 FA.STRIP_MAX = { past = 5, coming = 8 }
 FA.STRIP_SIZE = { min = 34, max = 56 }
-local DEFAULTS = { builds = {}, gear = {}, legacy = {}, nextId = 1, parts = { plan = true, gear = true, legacy = true }, strip = { past = 3, coming = 5, size = 44 } }
+local DEFAULTS = { builds = {}, gear = {}, legacy = {}, nextId = 1, parts = { plan = true, gear = true, legacy = true }, shown = { plan = true, gear = true, legacy = true }, strip = { past = 3, coming = 5, size = 44 } }
 
 function FA.Print(text)
   (DEFAULT_CHAT_FRAME or ChatFrame1):AddMessage("|cffffd100Forever Armoury:|r " .. tostring(text))
@@ -94,6 +94,8 @@ function FA.Init()
   if type(db.nextId) ~= "number" then db.nextId = DEFAULTS.nextId end
   if type(db.parts) ~= "table" then db.parts = {} end
   for key, on in pairs(DEFAULTS.parts) do if db.parts[key] == nil then db.parts[key] = on end end
+  if type(db.shown) ~= "table" then db.shown = {} end
+  for key, on in pairs(DEFAULTS.shown) do if db.shown[key] == nil then db.shown[key] = on end end
   if type(db.strip) ~= "table" then db.strip = {} end
   for key, n in pairs(DEFAULTS.strip) do if type(db.strip[key]) ~= "number" then db.strip[key] = n end end
   ForeverArmouryCharDB = ForeverArmouryCharDB or {}
@@ -130,11 +132,100 @@ function FA.StripSize()
 end
 
 function FA.PartOn(key) return FA.db and FA.db.parts[key] ~= false end
-function FA.SetPart(key, on)
-  FA.db.parts[key] = on and true or false
+
+--[[ Whether a part's panel is out, apart from its switch: the button on the part's window puts it away and brings it back
+     (forever-armoury#1604), and the choice is the account's, kept across sessions. A panel shows when its part is on, it is
+     not put away, and its window is open (FA.PanelWanted is the first two). ]]
+function FA.PanelShown(key) return not (FA.db and FA.db.shown and FA.db.shown[key] == false) end
+function FA.PanelWanted(key) return FA.PartOn(key) and FA.PanelShown(key) end
+
+function FA.RefreshAll()
   if FA.Refresh then FA.Refresh() end
   if FA.RefreshGear then FA.RefreshGear() end
   if FA.RefreshLegacy then FA.RefreshLegacy() end
+end
+
+--[[ A part on or off. Turning one on brings its panel back if it was put away, so a switch (the options page, /fa gear on)
+     always ends with the panel out. ]]
+function FA.SetPart(key, on)
+  FA.db.parts[key] = on and true or false
+  if on then FA.db.shown[key] = true end
+  FA.RefreshAll()
+end
+function FA.SetPanelShown(key, on)
+  FA.db.shown[key] = on and true or false
+  FA.RefreshAll()
+end
+
+--[[ A click on a window's button: a panel that is out is put away and one that is put away comes back; with the part off the
+     click turns it on, which shows the panel. ]]
+function FA.TogglePanel(key)
+  if not FA.PartOn(key) then FA.SetPart(key, true) else FA.SetPanelShown(key, not FA.PanelShown(key)) end
+end
+
+--[[ ---- the button on each game window ---- ]]
+local BUTTON_SIZE, BUTTON_GAP = 20, 2
+local WINDOW_BUTTONS = {}   -- part key -> its button
+
+local function partOf(key) for _, part in ipairs(FA.PARTS) do if part.key == key then return part end end end
+
+--[[ The window's own close button, as the frame names it (Blizzard's frame templates name it CloseButton or
+     ClosePanelButton), else the global the older frames are known by (CharacterFrameCloseButton); nil when there is none. ]]
+local function closeButtonOf(window)
+  local name = window.GetName and window:GetName()
+  for _, found in ipairs({ window.CloseButton or false, window.ClosePanelButton or false,
+    type(name) == "string" and _G[name .. "CloseButton"] or false, type(name) == "string" and _G[name .. "ClosePanelButton"] or false }) do
+    if type(found) == "table" and found.SetPoint then return found end
+  end
+end
+
+local function buttonTip(button)
+  GameTooltip:SetOwner(button, "ANCHOR_BOTTOM")
+  GameTooltip:SetText("Forever Armoury \226\128\148 " .. (FA.PanelWanted(button.key) and "hide " or "show ") .. partOf(button.key).panel, 1, 1, 1)
+  GameTooltip:Show()
+end
+
+--[[ The button looks lit while the panel is out: a gold wash and gold letters; otherwise a dark square with grey letters. ]]
+function FA.SyncWindowButton(key)
+  local button = WINDOW_BUTTONS[key]
+  if not button then return end
+  local lit = FA.PanelWanted(key)
+  button.lit:SetShown(lit)
+  if lit then button.label:SetTextColor(1, 0.82, 0) else button.label:SetTextColor(0.6, 0.6, 0.6) end
+end
+
+--[[ The small square button at the top right of a game window, left of its close button, that puts the part's panel away
+     and brings it back. One a part; made when the window is hooked. The addon ships no icon, so it carries "FA". ]]
+function FA.WindowButton(key, window)
+  if WINDOW_BUTTONS[key] then return WINDOW_BUTTONS[key] end
+  if not (window and partOf(key)) then return nil end
+  local close = closeButtonOf(window)
+  local button = CreateFrame("Button", "ForeverArmoury" .. key:sub(1, 1):upper() .. key:sub(2) .. "Button", window)
+  button.key = key
+  button:SetSize(BUTTON_SIZE, BUTTON_SIZE)
+  if close then button:SetPoint("RIGHT", close, "LEFT", -BUTTON_GAP, 0) else button:SetPoint("TOPRIGHT", window, "TOPRIGHT", -34, -6) end
+  button:SetFrameLevel((close or window):GetFrameLevel() + (close and 0 or 10))
+  button:RegisterForClicks("LeftButtonUp")
+  local back = button:CreateTexture(nil, "BACKGROUND")
+  back:SetAllPoints()
+  back:SetColorTexture(0.06, 0.05, 0.03, 0.85)
+  button.lit = button:CreateTexture(nil, "BORDER")
+  button.lit:SetAllPoints()
+  button.lit:SetColorTexture(1, 0.82, 0, 0.3)
+  button.label = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  button.label:SetPoint("CENTER", 0, 0)
+  button.label:SetText("FA")
+  button:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")
+  button:GetHighlightTexture():SetBlendMode("ADD")
+  button:SetScript("OnEnter", buttonTip)
+  button:SetScript("OnLeave", function() GameTooltip:Hide() end)
+  button:SetScript("OnClick", function(self)
+    FA.TogglePanel(self.key)
+    if GameTooltip.IsOwned and GameTooltip:IsOwned(self) then buttonTip(self) end   -- the tooltip says what the next click does
+  end)
+  WINDOW_BUTTONS[key] = button
+  FA.SyncWindowButton(key)
+  return button
 end
 
 --[[ /fa: the panel, the import box, the switches. ]]
