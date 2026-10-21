@@ -4112,6 +4112,28 @@ class UI(unittest.TestCase):
         self.tall(self.TOP + 20 + 12 + 32 * 7, pieces=7)
         self.assertEqual([r[1] for r in self.shown_rows()], [""] * 7)
 
+    def test_a_route_that_shrinks_while_scrolled_keeps_the_rows_and_the_offset_in_range(self):
+        window = self.TOP + 20 + 12 + 32 * 5   # five rows
+        self.tall(window)
+        L.run("ForeverArmouryGearPanel.scripts.OnMouseWheel(ForeverArmouryGearPanel, -1)")
+        for _ in range(10):
+            L.run("FA.ScrollGear(1)")
+        self.assertEqual([r[1] for r in self.shown_rows()], [self.MORE] + [""] * 4)   # the end of 12
+        self.tall(window, pieces=7)
+        rows = self.shown_rows()
+        ids = list(L.eval("function() local r = FA.Gear.Route(); local out = {} for i = 1, 7 do out[i] = r.pieces[i].id end return out end")().values())
+        self.assertEqual([r[0] for r in rows], ids[2:7])   # offset 2
+        self.assertEqual([r[1] for r in rows], [self.MORE] + [""] * 4)
+        self.tall(window, pieces=1)
+        rows = self.shown_rows()
+        self.assertEqual([r[0] for r in rows], ids[:1])
+        self.assertEqual([r[1] for r in rows], [""])
+        # a panel whose own height is known is fitted to that, not to the window's
+        L.run("ForeverArmouryGearPanel.GetHeight = function() return %d end" % (self.TOP + 20 + 32 * 2))
+        self.addCleanup(L.run, "ForeverArmouryGearPanel.GetHeight = nil")
+        self.tall(window, pieces=7)
+        self.assertEqual(len(self.shown_rows()), 2)
+
     def test_one_row_that_has_pieces_above_and_below_says_how_many_below(self):
         self.tall(100)
         L.run("ForeverArmouryGearPanel.scripts.OnMouseWheel(ForeverArmouryGearPanel, -1)")

@@ -260,7 +260,7 @@ function FA.DrawGear()
   if not panel then return end
   local fit = panel.fit
   offset = math.max(0, math.min(offset, #entries - fit))
-  for i = 1, fit do
+  for i = 1, math.min(fit, #entries - offset) do
     local e = entries[offset + i]
     if e then
       panel.rows[i] = panel.rows[i] or makeRow(i)
@@ -294,7 +294,8 @@ function FA.RefreshGear()
   if not FA.PanelWanted("gear") or (window and not window:IsShown()) then panel:Hide(); return end
   panel:Show()
   panel:SetHeight(heightOf())   -- the anchors decide it in the game; this is for a client that hasn't laid them out yet
-  panel.fit = rowsFit(heightOf())
+  local ok, own = pcall(function() return panel:GetHeight() end)
+  panel.fit = rowsFit(ok and type(own) == "number" and own > 0 and own or heightOf())   -- the panel's own height first: what the anchors made of it
   entries = {}
   local spec, how = Gear.Spec()
   if spec ~= nil then
