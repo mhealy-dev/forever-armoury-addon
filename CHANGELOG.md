@@ -2,6 +2,18 @@
 
 ## 0.5.1 (unreleased)
 
+The leveling gear routes are built in (forever-armoury #1591):
+
+- **`/fa gear` works with nothing pasted.** The addon ships all 54 of the site's leveling routes (nine classes, three specs, both sides) in `Data/Routes.lua`, so a fresh install shows the route for the character's class, side and spec. The panel says "Route shipped with the addon."
+- **A pasted `FAG1-` route still wins** for its class, spec and side, and the panel says "Route from the site." Copy for addon on the site is now for a route the site has changed since the release; forgetting a pasted route brings the shipped one back.
+- **`tools/routes.py`** writes `Data/Routes.lua` from the site's `public/content/route/<class>.json` (`python3 -I tools/routes.py`, standard library only); its header names the site commit and the date. A route that isn't one of the three specs on both sides, or a slot or source it has no number for, stops it without writing. `scripts/release.sh` expects `Data/*.lua` in the zip and nothing from `tools/`.
+
+Hovering a gear piece shows its tooltip (forever-armoury #1592):
+
+- **Hover a row** and the game's tooltip for the item shows to the right of the panel (`SetItemByID`; the item's link when that call is missing or fails, then its name), with where it comes from in full ("Deadmines: Edwin VanCleef", or the quest) and the level the route has it at, so a source cut off with "…" reads whole. Leaving hides it, and so does the row hiding.
+- **Shift-click a row** links the item in chat (the game's `HandleModifiedItemClick`, else `ChatEdit_InsertLink`); an item the game hasn't loaded yet has no link to give.
+- **A redraw leaves the row under the mouse alone**, so the tooltip doesn't drop when the game finishes loading an item's name; the status text has room for a fourth line (the route's origin) and the rows sit a little lower.
+
 Read every talent node, and keep going when a pick doesn't place (forever-armoury #1590):
 
 - **A node's tree is whichever of its `groupIDs` is one of the trees' groups.** The first beta try (client 1.60.1.70450) showed why the addon read 3 of Arms's talents, 1 of Fury's and 2 of Protection's: each node has 3 to 7 `groupIDs`, and the talent tree's group is not always the first, which was the only one the addon looked at. A node whose groups name two trees takes the first, and `/fa debug nodes` says so. A node whose groups don't name a tree goes to the tree its `posX` falls in or is nearest to, by the x range of the nodes that do have a group (the trees sit thousands apart, the columns 600); a tree is four columns wide at most, so when one tree has no node with a group, the nodes no other tree's range can take go to it by the widest gaps in x; with no group on any node, the x values are split into one run per tree the same way.

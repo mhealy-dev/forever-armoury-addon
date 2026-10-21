@@ -4,6 +4,7 @@ a Legacy plan code read and written, the game's trait nodes turned into trees of
 talent tree, the next pieces of a gear route against what the character wears and carries, and a Legacy plan bought across
 the three Legacy trees' configs. Run with `python test/run.py` (needs `pip install lupa`). The game's Lua
 is 5.1; LuaJIT's is used when lupa has it, else lupa's default."""
+import importlib.util
 import json
 import locale
 import os
@@ -279,6 +280,8 @@ file("BuildCode.lua")
 file("Talents.lua")
 file("Builds.lua")
 file("GearCode.lua")
+file("Data/Routes.lua")
+SHIPPED = FA.RouteData   -- the shipped routes; a test that swaps them has RESET put them back
 file("Gear.lua")
 file("LegacyCode.lua")
 file("Legacy.lua")
@@ -296,6 +299,7 @@ function RESET(api)
   SPEC.active, SPEC.groups, COMBAT, FAIL_COMMIT, NO_ACTIVE, NO_CHANGE, TALENTED, BONUS = 1, 1, false, false, false, false, 0, 0
   REGISTERED, BAD_EVENTS = {}, {}
   FACTION, EQUIPPED, BAGS, ITEMS = "Alliance", {}, {}, {}
+  FA.RouteData = SHIPPED
   LEGACY_ON, LEG, LSTAGED, LPOINTS, LCAP, LREFUSE, LFAIL_COMMIT = false, {}, {}, 16, 16, nil, false
 end
 -- a node's id by tree and talent index, for setting OTHER
@@ -1657,6 +1661,7 @@ class Gear(unittest.TestCase):
 
     def test_the_characters_route(self):
         why = L.eval("function() local r, why = FA.Gear.Route(); return r and 'route' or why end")
+        L.run("FA.RouteData = { routes = {} }")   # a build with no shipped routes: only what's pasted
         self.assertIn("No gear route for this class yet", why())
         self.add(ROUTE_CODE)
         self.assertIn("Pick a spec", why())
@@ -1671,6 +1676,98 @@ class Gear(unittest.TestCase):
         self.assertEqual(L.eval("FA.Gear.Side()"), None)
         L.run("FACTION = 'Horde'")
         self.assertEqual(L.eval("FA.Gear.Side()"), "horde")
+
+    # ---- the routes the addon ships (Data/Routes.lua, written by tools/routes.py)
+    CLASSES = ("druid", "hunter", "mage", "paladin", "priest", "rogue", "shaman", "warlock", "warrior")
+
+    def test_the_shipped_table_has_every_route(self):
+        shipped = L.eval("function(cls, spec, side) local r = FA.Gear.Shipped(cls, spec, side); return r and #r.pieces or 0 end")
+        counts = [shipped(c, spec, side) for c in self.CLASSES for spec in range(3) for side in ("alliance", "horde")]
+        self.assertEqual(len(counts), 54)
+        self.assertTrue(all(37 <= n <= 59 for n in counts), counts)   # the site's routes are 37 to 59 pieces
+        # a route with nothing else in the table: no fourth spec, no other side, no other class
+        for args in (("warrior", 3, "alliance"), ("warrior", 0, "neutral"), ("deathknight", 0, "horde")):
+            self.assertEqual(shipped(*args), 0)
+
+    def test_every_shipped_piece_is_in_the_shape_a_pasted_one_is(self):
+        bad = L.eval("""function(classes)
+          local bad, slots = {}, {}
+          for i, s in ipairs(FA.GearCode.SLOTS) do slots[s] = i end
+          for _, cls in ipairs(classes) do for spec = 0, 2 do for _, side in ipairs({ 'alliance', 'horde' }) do
+            local r = FA.Gear.Shipped(cls, spec, side)
+            local last = 0
+            if not (r.cls == cls and r.spec == spec and r.side == side) then bad[#bad + 1] = cls .. spec .. side end
+            for i, p in ipairs(r.pieces) do
+              local from, name = p.from, cls .. spec .. side .. '#' .. i
+              local ok = type(p.id) == 'number' and p.id > 0 and p.id == math.floor(p.id)
+                and type(p.level) == 'number' and p.level >= 1 and p.level <= 60 and p.level >= last
+                and slots[p.slot] ~= nil
+                and ((from[1] == 'drop' and #from == 3 and type(from[2]) == 'number' and type(from[3]) == 'number')
+                  or (from[1] == 'quest' and #from == 2 and type(from[2]) == 'number'))
+              if not ok then bad[#bad + 1] = name end
+              last = p.level
+            end
+          end end end
+          return table.concat(bad, ' ')
+        end""")(L.lua.table(*self.CLASSES))
+        self.assertEqual(bad, "")
+
+    def test_the_toc_loads_the_routes_before_gear(self):
+        with open(os.path.join(ROOT, "ForeverArmoury.toc")) as f:
+            files = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+        self.assertIn("Data/Routes.lua", files)
+        self.assertLess(files.index("Data/Routes.lua"), files.index("Gear.lua"))
+        for name in files:
+            self.assertTrue(os.path.exists(os.path.join(ROOT, name)), name)
+
+    def test_the_shipped_slots_are_the_codes_slots(self):
+        # tools/routes.py numbers the slots as this list does, and Data/Routes.lua keeps the numbers
+        spec = importlib.util.spec_from_file_location("routes_tool", os.path.join(ROOT, "tools", "routes.py"))
+        tool = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(tool)
+        self.assertEqual(list(tool.SLOTS), list(L.eval("FA.GearCode.SLOTS").values()))
+        self.assertEqual(list(tool.CLASSES), sorted(self.CLASSES))
+
+    def test_a_piece_is_expanded_as_the_site_has_it(self):
+        L.run("FA.RouteData = { routes = { warrior = { [0] = { alliance = { {271097,13,4,1,3065,3493}, {279895,14,15,2,96393}, {1,2,99,1,3,4}, {1,2,3,9,3} } } } } }")
+        got = L.eval("""function() local r = FA.Gear.Shipped('warrior', 0, 'alliance'); local out = {}
+          for _, p in ipairs(r.pieces) do out[#out + 1] = p.id .. ' ' .. p.level .. ' ' .. p.slot .. ' ' .. table.concat(p.from, ',') end
+          return table.concat(out, ' / ') end""")()
+        self.assertEqual(got, "271097 13 back drop,3065,3493 / 279895 14 mainhand quest,96393")   # a slot or a kind it doesn't know is left out
+        self.assertEqual(L.eval("FA.Gear.Shipped('warrior', 0, 'alliance') == FA.Gear.Shipped('warrior', 0, 'alliance')"), True)   # made once
+
+    def test_a_fresh_character_sees_the_shipped_route(self):
+        why = L.eval("function() local r, from = FA.Gear.Route(); return r and (#r.pieces .. ' ' .. from) or from end")
+        self.assertIn("Pick a spec", why())
+        L.run("FA.Gear.SetSpec(2)")
+        self.assertTrue(L.eval("FA.db.gear.warrior == nil or #FA.db.gear.warrior == 0"))   # nothing pasted
+        self.assertRegex(why(), r"^\d+ shipped$")
+        L.run("FACTION = 'Horde'")
+        self.assertRegex(why(), r"^\d+ shipped$")
+        # the spec a followed build points to
+        L.run("FA.Gear.SetSpec(nil); FA.AddBuilds(assert(FA.Code.Read('FAT1-warrior-Fury-1212120101'))); FA.SetActive(1)")
+        self.assertEqual(L.eval("function() local r = FA.Gear.Route(); return r.spec .. r.side end")(), "1horde")
+        # a class the addon ships none for, and none pasted, says so
+        L.run("FA.class = 'deathknight'")
+        self.assertIn("No gear route for this class yet", why())
+        L.run("FA.class = 'warrior'")
+
+    def test_a_pasted_route_wins_over_the_shipped_one(self):
+        lookup = L.eval("function(spec) local r, from = FA.Gear.Lookup('warrior', spec, 'alliance'); return from, r and #r.pieces end")
+        shipped = lookup(0)
+        self.assertEqual(shipped[0], "shipped")
+        n = shipped[1]
+        self.add(ROUTE_CODE)   # Arms, Alliance, six pieces
+        self.assertEqual(tuple(lookup(0)), ("pasted", 6))
+        self.assertEqual(lookup(1)[0], "shipped")   # other specs and sides stay the shipped ones
+        L.run("FA.Gear.SetSpec(0)")
+        self.assertEqual(L.eval("function() local r, from = FA.Gear.Route(); return from, #r.pieces end")(), ("pasted", 6))
+        L.run("FACTION = 'Horde'")
+        self.assertEqual(L.eval("function() local r, from = FA.Gear.Route(); return from end")(), "shipped")
+        # forgetting the pasted one brings the shipped one back
+        L.run("FACTION = 'Alliance'")
+        self.assertTrue(L.eval("FA.Gear.Forget('warrior', 0, 'alliance')"))
+        self.assertEqual(tuple(lookup(0)), ("shipped", n))
 
     def test_owned_is_what_is_worn_and_carried(self):
         L.run("EQUIPPED = { [1] = 6686, [16] = 6687 }; BAGS = { [0] = { 1156, nil, 7003 }, [3] = { [16] = 2262 } }")
@@ -1772,6 +1869,7 @@ frame = function(name)
     if k == "SetPoint" then return function(self, ...) self.points[#self.points + 1] = { ... } end end
     if k == "ClearAllPoints" then return function(self) rawset(self, "points", {}) end end
     if k == "CreateTexture" or k == "CreateFontString" then return region end
+    if k == "EnableMouse" then return keep("mouse") end
     if k == "Enable" then return function(self) rawset(self, "enabled", true) end end
     if k == "Disable" then return function(self) rawset(self, "enabled", false) end end
     if k == "Show" then return function(self) rawset(self, "shown", true) end end
@@ -1793,6 +1891,8 @@ UIParent, GameTooltip, ChatFontNormal = frame("UIParent"), frame("GameTooltip"),
 TIP = { lines = {} }
 GameTooltip.SetOwner = function(_, owner) TIP = { owner = owner, lines = {} } end
 GameTooltip.SetSpellByID = function(_, id) TIP.spell = id end
+GameTooltip.SetItemByID = function(_, id) TIP.item = id end
+GameTooltip.SetHyperlink = function(_, link) TIP.link = link end
 GameTooltip.SetText = function(_, text) TIP.text = text end
 GameTooltip.AddLine = function(_, text) TIP.lines[#TIP.lines + 1] = text end
 GameTooltip.Show = function() TIP.shown = true end
@@ -3125,12 +3225,34 @@ class UI(unittest.TestCase):
                       "return p.shown, p.status.text, p.spec.text, rows end")()
 
     def test_gear_panel_without_a_route(self):
-        L.run("FA.RefreshGear()")
+        L.run("FA.RouteData = { routes = {} }; FA.RefreshGear()")   # nothing shipped for the class, nothing pasted
         shown, status, spec, rows = self.gear()
         self.assertTrue(shown)
         self.assertIn("No gear route for this class yet", status)
         self.assertEqual(spec, "Pick a spec")
         self.assertEqual(len(rows), 0)
+
+    def test_gear_panel_on_a_fresh_install_shows_the_shipped_route(self):
+        L.run("PLAYER.level = 14; FA.Gear.SetSpec(0); FA.RefreshGear()")   # nothing pasted
+        shown, status, spec, rows = self.gear()
+        self.assertTrue(shown)
+        self.assertEqual(spec, "Spec: Arms")
+        self.assertIn("Arms, Alliance, level 14:", status)
+        self.assertIn("Route shipped with the addon.", status)
+        self.assertNotIn("from the site", status)
+        self.assertGreater(len(rows), 0)
+        first = rows[min(rows.keys())]
+        self.assertIn("Back |cff808080item 271097|r |cffff8080get|r | dungeon 3065: NPC 3493", first)   # the site's Arms route starts with its cloak
+        # a pasted route for the same class, spec and side takes its place, and the panel says where it's from
+        L.run("FA.ImportText('" + ROUTE_CODE + "')")
+        shown, status, spec, rows = self.gear()
+        self.assertIn("Route from the site.", status)
+        self.assertNotIn("shipped", status)
+        self.assertEqual(len(rows), 6)
+        # the other spec is still the shipped one
+        L.run("FA.Gear.SetSpec(1); FA.RefreshGear()")
+        self.assertIn("Fury, Alliance", self.gear()[1])
+        self.assertIn("Route shipped with the addon.", self.gear()[1])
 
     def test_one_paste_imports_a_build_and_a_route(self):
         ok, said = L.eval("function(t) return FA.ImportText(t) end")("FAT1-warrior-Arms-" + GATED + "\n" + ROUTE_CODE)
@@ -3162,7 +3284,10 @@ class UI(unittest.TestCase):
         self.assertEqual(press()[0], "Spec: Arms")
         self.assertIn("Arms, Alliance, level 60", self.gear()[1])
         self.assertEqual(press()[0], "Spec: Fury")
+        self.assertIn("Fury, Alliance, level 60", self.gear()[1])   # the shipped route; the pasted one is Arms's only
+        L.run("FA.RouteData = { routes = {} }; FA.RefreshGear()")
         self.assertIn("No Fury route for Alliance here yet", self.gear()[1])
+        L.run("FA.RouteData = SHIPPED; FA.RefreshGear()")
         self.assertEqual(press()[0], "Spec: Protection")
         self.assertEqual(press()[0], "Pick a spec")
         L.run("FA.SetPart('gear', false)")
@@ -3173,6 +3298,99 @@ class UI(unittest.TestCase):
         self.assertFalse(L.eval("ForeverArmouryGearPanel.shown"))
         L.run("CharacterFrame.IsShown = nil; FA.RefreshGear()")
         self.assertTrue(L.eval("ForeverArmouryGearPanel.shown"))
+
+    # ---- hovering a piece (forever-armoury#1592)
+    def piece_row(self, text):
+        """The gear panel's row whose item text has `text`."""
+        return L.eval("function(text) for _, r in ipairs(ForeverArmouryGearPanel.rows) do if r.shown and r.piece and r.item.text:find(text, 1, true) then return r end end end")(text)
+
+    def gear_hover(self, row, event="OnEnter"):
+        L.eval("function(r, e) r.scripts[e](r) end")(row, event)
+
+    def route_at(self, level=14):
+        L.run("FA.ImportText('" + ROUTE_CODE + "'); FA.Gear.SetSpec(0); PLAYER.level = %d; "
+              "ITEMS = { [279895] = { 'Ironforge Greathammer', 'INVTYPE_2HWEAPON' } }; FA.RefreshGear()" % level)
+
+    def test_hovering_a_piece_shows_the_items_tooltip_with_where_it_comes_from(self):
+        self.route_at()
+        row = self.piece_row("Ironforge Greathammer")
+        self.gear_hover(row)
+        tip = L.eval("function() return TIP.shown, TIP.item, TIP.link, TIP.owner == ForeverArmouryGearPanel.rows[2] or TIP.owner ~= nil, table.concat(TIP.lines, '|') end")()
+        self.assertEqual(tip[:3], (True, 279895, None))
+        self.assertEqual(tip[4], " |Quest: #96393|On the route at level 14.")
+        # to the right of the panel, not over it
+        point = L.eval("function() local p = GameTooltip.points[#GameTooltip.points]; return p[1], p[2] == ForeverArmouryGearPanel, p[3] end")()
+        self.assertEqual(point, ("TOPLEFT", True, "TOPRIGHT"))
+        # a boss: the dungeon and the boss as the row has them
+        self.gear_hover(self.piece_row("item 270231"))
+        self.assertEqual(L.eval("TIP.item"), 270231)
+        self.assertEqual(L.eval("TIP.lines[2]"), "dungeon 3065: NPC 3495")
+        # the level is the route's
+        self.assertEqual(L.eval("TIP.lines[3]"), "On the route at level 13.")
+        # leaving hides it
+        self.gear_hover(row, "OnLeave")
+        self.assertFalse(L.eval("TIP.shown"))
+
+    def test_the_hover_names_the_source_in_full_as_the_game_has_it(self):
+        self.route_at()
+        L.run("FA.Gear.NAMES = { dungeon = function() return 'Deadmines' end, npc = function() return 'Edwin VanCleef' end, quest = function() return 'The Defias Brotherhood' end }")
+        self.gear_hover(self.piece_row("item 273088"))
+        self.assertEqual(L.eval("TIP.lines[2]"), "Deadmines: Edwin VanCleef")
+        self.gear_hover(self.piece_row("Ironforge Greathammer"))
+        self.assertEqual(L.eval("TIP.lines[2]"), "Quest: The Defias Brotherhood")   # not the cached text of the row
+
+    def test_the_hover_works_while_the_game_has_no_item_by_id_call(self):
+        self.route_at()
+        L.run("SAVED = GameTooltip.SetItemByID; GameTooltip.SetItemByID = false")
+        self.gear_hover(self.piece_row("Ironforge Greathammer"))
+        self.assertEqual(L.eval("TIP.link"), "|cffffffff|Hitem:279895::::::::60:::::|h[Ironforge Greathammer]|h|r")   # the link the game gave
+        self.gear_hover(self.piece_row("item 270231"), "OnLeave")
+        self.gear_hover(self.piece_row("item 270231"))
+        self.assertEqual(L.eval("TIP.link"), "item:270231")   # an item the game hasn't loaded
+        # and a call that fails leaves the name and id
+        L.run("GameTooltip.SetHyperlink = function() error('no such item') end")
+        self.gear_hover(self.piece_row("item 270231"))
+        self.assertEqual(L.eval("TIP.text"), "|cff808080item 270231|r")
+        self.assertTrue(L.eval("TIP.shown"))
+        L.run("GameTooltip.SetItemByID = SAVED; GameTooltip.SetHyperlink = function(_, link) TIP.link = link end")
+
+    def test_a_row_takes_the_mouse_and_a_hidden_row_takes_its_tooltip_with_it(self):
+        self.route_at()
+        rows = L.eval("ForeverArmouryGearPanel.rows")
+        self.assertTrue(all(L.eval("function(r) return r.kind == 'Button' and r.mouse == true end")(r) for r in rows.values()))
+        row = self.piece_row("Ironforge Greathammer")
+        self.gear_hover(row)
+        L.run("GameTooltip.IsOwned = function(_, f) return TIP.owner == f end")
+        L.eval("function(r) r.scripts.OnHide(r) end")(row)
+        self.assertFalse(L.eval("TIP.shown"))
+        L.run("GameTooltip.IsOwned = false")
+
+    def test_a_redraw_leaves_the_row_under_the_mouse_shown(self):
+        self.route_at()
+        row = self.piece_row("Ironforge Greathammer")
+        L.run("HIDES = 0; for _, r in ipairs(ForeverArmouryGearPanel.rows) do local h = r.Hide; r.Hide = function(self) HIDES = HIDES + 1; return h(self) end end")
+        L.run("FA.RefreshGear()")   # as GET_ITEM_INFO_RECEIVED does
+        self.assertEqual(L.eval("HIDES"), 12 - 6)   # only the rows past the route's six pieces
+        L.run("for _, r in ipairs(ForeverArmouryGearPanel.rows) do r.Hide = nil end")
+
+    def test_shift_click_links_the_item_in_chat(self):
+        self.route_at()
+        L.run("INSERTED, MODIFIED = {}, true; IsModifiedClick = function(which) return MODIFIED and (which == nil or which == 'CHATLINK') end; "
+              "ChatEdit_InsertLink = function(link) INSERTED[#INSERTED + 1] = link; return true end")
+        click = lambda text: L.eval("function(r) r.scripts.OnClick(r, 'LeftButton') end")(self.piece_row(text))
+        click("Ironforge Greathammer")
+        self.assertEqual(list(L.eval("INSERTED").values()), ["|cffffffff|Hitem:279895::::::::60:::::|h[Ironforge Greathammer]|h|r"])
+        click("item 270231")   # not loaded, so no link to give
+        self.assertEqual(len(L.eval("INSERTED")), 1)
+        # the game's own handler takes the click when it has one (it links, or tries the item on)
+        L.run("HANDLED = {}; HandleModifiedItemClick = function(link) HANDLED[#HANDLED + 1] = link; return true end")
+        click("Ironforge Greathammer")
+        self.assertEqual((len(L.eval("HANDLED")), len(L.eval("INSERTED"))), (1, 1))
+        # a plain click does nothing
+        L.run("MODIFIED = false")
+        click("Ironforge Greathammer")
+        self.assertEqual((len(L.eval("HANDLED")), len(L.eval("INSERTED"))), (1, 1))
+        L.run("IsModifiedClick, ChatEdit_InsertLink, HandleModifiedItemClick = nil, nil, nil")
 
     # ---- the Legacy panel
     def legacy(self):

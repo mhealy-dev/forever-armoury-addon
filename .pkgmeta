@@ -9,5 +9,6 @@ ignore:
   - test
   - docs
   - scripts
+  - tools
   - README.md
   - .venv

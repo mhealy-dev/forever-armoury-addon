@@ -1,23 +1,27 @@
---[[ The leveling gear part: the site's gear routes kept per account, the one this character is on, and the next
-     pieces at its level.
+--[[ The leveling gear part: the gear routes the addon ships, the ones pasted from the site and kept per account, the one
+     this character is on, and the next pieces at its level.
 
      FA.db.gear[class] is a list of { spec, side, pieces }: every route imported on this account, by class, one per
      spec and side (a paste of the same spec and side replaces it). A route is the site's leveling route (forever-armoury
      public/content/route/<class>.json): the weapons and key armour pieces picked up on the way to 60, in order, each
-     { id, level, slot, from }. The character's route is its class's for its spec and side: the side from the game,
-     the spec the heaviest tree of the build it follows, or the one it chose (FA.char.gearSpec) when there's no build
-     or the trees tie.
+     { id, level, slot, from }. Data/Routes.lua ships all 54 of them (FA.RouteData, as numbers; Shipped turns one into
+     the same shape), so a fresh install has them; a pasted route for the same class, spec and side wins over the
+     shipped one. The character's route is its class's for its spec and side: the side from the game, the spec the
+     heaviest tree of the build it follows, or the one it chose (FA.char.gearSpec) when there's no build or the trees tie.
 
      FA.Gear.RoutesFor(cls)                 the routes kept for a class
      FA.Gear.Add(routes)                    keeps routes a code gave; how many were this class's, and how many others'
-     FA.Gear.Find(cls, spec, side)          a route, or nil
+     FA.Gear.Find(cls, spec, side)          a pasted route, or nil
+     FA.Gear.Shipped(cls, spec, side)       the route the addon ships, or nil
+     FA.Gear.Lookup(cls, spec, side)        the pasted route, else the shipped one, and which: "pasted" or "shipped"
      FA.Gear.Forget(cls, spec, side)        drops one
      FA.Gear.Side()                         "alliance" or "horde", from the game; nil before it says
      FA.Gear.BuildSpec(build)               the heaviest tree of a build, 0 to 2, or nil on a tie or without points
      FA.Gear.Spec()                         the character's spec, and where it came from: "chosen", "build", or nil
      FA.Gear.SetSpec(spec)                  chooses a spec (nil: back to the build's)
      FA.Gear.SpecName(spec)                 a tree's name from the game, or "spec 1" when it hasn't said
-     FA.Gear.Route()                        this character's route, or nil and why
+     FA.Gear.Route()                        this character's route and where it's from ("pasted" or "shipped"),
+                                            or nil and why
      FA.Gear.Owned()                        the item ids equipped or in the bags, as a set
      FA.Gear.Plan(route, level, owned, twoHand)
                                             where a character is on a route at a level (below); owned and twoHand
@@ -47,6 +51,42 @@ end
 function Gear.Find(cls, spec, side)
   for i, r in ipairs(Gear.RoutesFor(cls)) do if r.spec == spec and r.side == side then return r, i end end
   return nil
+end
+
+--[[ The route Data/Routes.lua ships for a class, spec and side, as the same { cls, spec, side, pieces } a pasted code
+     gives. Kept once it's made, by the list it came from. ]]
+local expanded = setmetatable({}, { __mode = "k" })
+function Gear.Shipped(cls, spec, side)
+  local data = FA.RouteData and FA.RouteData.routes
+  local list = data and data[cls] and data[cls][spec] and data[cls][spec][side]
+  if not list then return nil end
+  local route = expanded[list]
+  if not route then
+    local pieces = {}
+    for _, p in ipairs(list) do
+      local from = p[4] == 1 and { "drop", p[5], p[6] } or p[4] == 2 and { "quest", p[5] } or nil
+      if from and FA.GearCode.SLOTS[p[3]] then pieces[#pieces + 1] = { id = p[1], level = p[2], slot = FA.GearCode.SLOTS[p[3]], from = from } end
+    end
+    route = { cls = cls, spec = spec, side = side, pieces = pieces }
+    expanded[list] = route
+  end
+  return route
+end
+
+function Gear.Lookup(cls, spec, side)
+  local pasted = Gear.Find(cls, spec, side)
+  if pasted then return pasted, "pasted" end
+  local shipped = Gear.Shipped(cls, spec, side)
+  if shipped then return shipped, "shipped" end
+  return nil
+end
+
+--[[ Whether any route, pasted or shipped, is there for a class. ]]
+local function hasRoutes(cls)
+  if not cls then return false end
+  if #Gear.RoutesFor(cls) > 0 then return true end
+  local data = FA.RouteData and FA.RouteData.routes
+  return data and data[cls] ~= nil or false
 end
 
 function Gear.Add(routes)
@@ -104,18 +144,17 @@ function Gear.SpecName(spec)
 end
 
 function Gear.Route()
-  local list = Gear.RoutesFor(FA.class)
-  if #list == 0 then return nil, "No gear route for this class yet. On the site, open Best in slot, Leveling, Copy for addon, then Import here." end
+  if not hasRoutes(FA.class) then return nil, "No gear route for this class yet. On the site, open Best in slot, Leveling, Copy for addon, then Import here." end
   local side = Gear.Side()
   if not side then return nil, "The game hasn't said which side you're on yet." end
   local spec = Gear.Spec()
   if spec == nil then return nil, "Pick a spec: follow a build, or press the spec button." end
-  local route = Gear.Find(FA.class, spec, side)
+  local route, from = Gear.Lookup(FA.class, spec, side)
   if not route then
     local sideName = side:sub(1, 1):upper() .. side:sub(2)
     return nil, "No " .. Gear.SpecName(spec) .. " route for " .. sideName .. " here yet. Copy it from the site's Leveling plate and Import it."
   end
-  return route
+  return route, from
 end
 
 function Gear.Owned()

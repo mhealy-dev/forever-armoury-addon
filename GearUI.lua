@@ -1,7 +1,8 @@
 --[[ The leveling gear part's panel: beside the character window, the pieces of the route to go and get at this level,
      then the ones coming, each as the game's item link with where it comes from under it. Gear.lua says which pieces
-     those are; the game names the items from their ids (GetItemInfo), so the addon carries no item text, and hovering a
-     piece shows the game's own tooltip. ]]
+     those are; the game names the items from their ids (GetItemInfo), so the addon carries no item text. Each row is a
+     button: hovering it shows the game's own tooltip for the item to the right of the panel, with where it comes from
+     and the level the route has it at, and shift-click links the item in chat. ]]
 
 local _, FA = ...
 local Gear = FA.Gear
@@ -10,6 +11,8 @@ local BACKDROP = { bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background", e
   tile = true, tileSize = 32, edgeSize = 32, insets = { left = 11, right = 12, top = 12, bottom = 11 } }
 local TEMPLATE = BackdropTemplateMixin and "BackdropTemplate" or nil
 local ROWS, ROW_HEIGHT = 12, 32
+local STATUS_HEIGHT = 52   -- the status text's four lines of small type
+local ROWS_TOP = 122      -- under the status and the buttons
 local SLOT_NAMES = { head = "Head", neck = "Neck", shoulder = "Shoulder", back = "Back", chest = "Chest", wrist = "Wrist", hands = "Hands",
   waist = "Waist", legs = "Legs", feet = "Feet", finger1 = "Ring", finger2 = "Ring", trinket1 = "Trinket", trinket2 = "Trinket",
   mainhand = "Main hand", offhand = "Off hand", ranged = "Ranged" }
@@ -26,10 +29,35 @@ local function itemLink(id)
   return "|cff808080item " .. id .. "|r", false
 end
 
+--[[ The hover: the game's tooltip for the item, to the right of the panel, then where the piece comes from and the level the
+     route has it at. SetItemByID, else the item's link, else its name and id, so the hover shows something whatever the
+     client has. ]]
+local function showTooltip(row)
+  local piece = row.piece
+  if not piece then return end
+  GameTooltip:SetOwner(row, "ANCHOR_NONE")
+  GameTooltip:ClearAllPoints()
+  GameTooltip:SetPoint("TOPLEFT", panel, "TOPRIGHT", 0, 0)
+  local drawn = GameTooltip.SetItemByID and pcall(GameTooltip.SetItemByID, GameTooltip, piece.id)
+  if not drawn then drawn = pcall(GameTooltip.SetHyperlink, GameTooltip, row.link or ("item:" .. piece.id)) end
+  if not drawn then GameTooltip:SetText((itemLink(piece.id))) end
+  GameTooltip:AddLine(" ")
+  GameTooltip:AddLine(Gear.SourceText(piece), 0.7, 0.7, 0.7, true)
+  GameTooltip:AddLine("On the route at level " .. piece.level .. ".", 0.7, 0.7, 0.7, true)
+  GameTooltip:Show()
+end
+
+--[[ Shift-click (the game's chat-link click) puts the item's link in the chat box. ]]
+local function clickRow(row)
+  if not (row.link and IsModifiedClick and IsModifiedClick()) then return end
+  if HandleModifiedItemClick and HandleModifiedItemClick(row.link) then return end
+  if IsModifiedClick("CHATLINK") and ChatEdit_InsertLink then ChatEdit_InsertLink(row.link) end
+end
+
 local function makePanel()
   local window = CharacterFrame or UIParent
   panel = CreateFrame("Frame", "ForeverArmouryGearPanel", window, TEMPLATE)
-  panel:SetSize(300, 110 + ROWS * ROW_HEIGHT + 20)
+  panel:SetSize(300, ROWS_TOP + ROWS * ROW_HEIGHT + 20)
   if CharacterFrame then panel:SetPoint("TOPLEFT", window, "TOPRIGHT", -2, -12) else panel:SetPoint("CENTER") end
   panel:SetBackdrop(BACKDROP)
   panel:SetFrameStrata("HIGH")
@@ -44,13 +72,13 @@ local function makePanel()
   panel.status:SetPoint("TOPRIGHT", -16, -36)
   panel.status:SetJustifyH("LEFT")
   panel.status:SetJustifyV("TOP")
-  panel.status:SetHeight(40)
+  panel.status:SetHeight(STATUS_HEIGHT)
   panel.status:SetWordWrap(true)
 
   --[[ the spec: the build's, or one chosen here; each press moves it on, and back to the build's ]]
   panel.spec = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
   panel.spec:SetSize(130, 22)
-  panel.spec:SetPoint("TOPLEFT", 14, -80)
+  panel.spec:SetPoint("TOPLEFT", 14, -36 - STATUS_HEIGHT - 4)
   panel.spec:SetScript("OnClick", FA.CycleGearSpec)
   panel.spec:SetScript("OnEnter", function(self)
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -61,7 +89,7 @@ local function makePanel()
 
   local import = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
   import:SetSize(84, 22)
-  import:SetPoint("TOPRIGHT", -14, -80)
+  import:SetPoint("TOPRIGHT", -14, -36 - STATUS_HEIGHT - 4)
   import:SetText("Import")
   import:SetScript("OnClick", function() FA.OpenImport() end)
 
@@ -69,7 +97,9 @@ local function makePanel()
   for i = 1, ROWS do
     local row = CreateFrame("Button", nil, panel)
     row:SetSize(268, ROW_HEIGHT - 2)
-    row:SetPoint("TOPLEFT", 16, -110 - (i - 1) * ROW_HEIGHT)
+    row:SetPoint("TOPLEFT", 16, -ROWS_TOP - (i - 1) * ROW_HEIGHT)
+    row:EnableMouse(true)
+    row:RegisterForClicks("LeftButtonUp")
     row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
     row:GetHighlightTexture():SetBlendMode("ADD")
     row.slot = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -91,20 +121,10 @@ local function makePanel()
     row.from:SetJustifyH("LEFT")
     row.from:SetWordWrap(false)
     row.from:SetTextColor(0.7, 0.7, 0.7)
-    row:SetScript("OnEnter", function(self)
-      if not self.piece then return end
-      GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-      if GameTooltip.SetItemByID then GameTooltip:SetItemByID(self.piece.id) else GameTooltip:SetHyperlink("item:" .. self.piece.id) end
-      GameTooltip:AddLine(" ")
-      GameTooltip:AddLine(self.fromText or "", 0.7, 0.7, 0.7, true)
-      GameTooltip:AddLine("On the route at level " .. self.piece.level .. ".", 0.7, 0.7, 0.7, true)
-      GameTooltip:Show()
-    end)
+    row:SetScript("OnEnter", showTooltip)
     row:SetScript("OnLeave", function() GameTooltip:Hide() end)
-    row:SetScript("OnClick", function(self)
-      if not (self.link and IsModifiedClick and IsModifiedClick("CHATLINK")) then return end
-      if ChatEdit_InsertLink then ChatEdit_InsertLink(self.link) end
-    end)
+    row:SetScript("OnHide", function(self) if GameTooltip.IsOwned and GameTooltip:IsOwned(self) then GameTooltip:Hide() end end)
+    row:SetScript("OnClick", clickRow)
     panel.rows[i] = row
   end
 end
@@ -120,14 +140,18 @@ end
 local function fillRow(row, piece, state, dim)
   row.piece = piece
   local link, loaded = itemLink(piece.id)
-  row.link = loaded and link or nil
+  row.link = loaded and link or false
   row.slot:SetText(SLOT_NAMES[piece.slot] or piece.slot)
   row.item:SetText(link)
   row.item:SetAlpha(dim and 0.6 or 1)
   row.state:SetText(state)
-  row.fromText = Gear.SourceText(piece)
-  row.from:SetText(row.fromText)
+  row.from:SetText(Gear.SourceText(piece))
   row:Show()
+end
+
+--[[ Hides the rows after the first n: a row that stays is not hidden and shown again, so a tooltip over it stays. ]]
+local function hideRowsAfter(n)
+  for i = n + 1, ROWS do panel.rows[i]:Hide() end
 end
 
 function FA.RefreshGear()
@@ -135,20 +159,21 @@ function FA.RefreshGear()
   local window = CharacterFrame
   if not FA.PartOn("gear") or (window and not window:IsShown()) then panel:Hide(); return end
   panel:Show()
-  for _, row in ipairs(panel.rows) do row:Hide(); row.piece = nil end
+  for _, row in ipairs(panel.rows) do row.piece = false end
   local spec, how = Gear.Spec()
   if spec ~= nil then
     panel.spec:SetText((how == "chosen" and "Spec: " or "Build: ") .. Gear.SpecName(spec))
   else
     panel.spec:SetText("Pick a spec")
   end
-  local route, why = Gear.Route()
-  if not route then panel.status:SetText(why); return end
+  local route, from = Gear.Route()
+  if not route then panel.status:SetText(from); hideRowsAfter(0); return end
   local level = UnitLevel("player") or 1
   local plan = Gear.Plan(route, level)
   local side = route.side:sub(1, 1):upper() .. route.side:sub(2)
   local lines = { Gear.SpecName(route.spec) .. ", " .. side .. ", level " .. level .. ": " .. plan.had .. " of " .. plan.worn ..
-    (plan.worn == 1 and " piece" or " pieces") .. " of your level had." }
+    (plan.worn == 1 and " piece" or " pieces") .. " of your level had.",
+    from == "pasted" and "Route from the site." or "Route shipped with the addon." }
   if #plan.get == 0 and #plan.coming == 0 then lines[#lines + 1] = "Every piece of the route is yours."
   elseif #plan.get == 0 then lines[#lines + 1] = "Nothing to get at this level. Coming next:"
   else lines[#lines + 1] = "To get now, then what's coming:" end
@@ -164,6 +189,7 @@ function FA.RefreshGear()
     if n > ROWS then break end
     fillRow(panel.rows[n], p, "at " .. p.level, true)
   end
+  hideRowsAfter(n)
 end
 
 --[[ The panel on the character window, redrawn as it shows and hides and as the character's gear, bags and level
