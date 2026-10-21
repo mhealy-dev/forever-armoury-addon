@@ -158,6 +158,7 @@ local function nodeNameAndIcon(configID, node)
   local icon = def.overrideIcon or (def.spellID and C_Spell and C_Spell.GetSpellTexture and C_Spell.GetSpellTexture(def.spellID))
   return name, icon, def.spellID
 end
+Talents.NodeNameAndIcon = nodeNameAndIcon   -- the Legacy strip reads its perks' definitions the same way, and the spell for the tooltip
 
 --[[ A talent's icon for the strip: the game's, or a question mark while the game has none yet. ]]
 Talents.UNKNOWN_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"

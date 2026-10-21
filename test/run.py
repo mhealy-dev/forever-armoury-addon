@@ -173,11 +173,19 @@ local function lstaged() local n = 0 for _, st in pairs(LSTAGED) do for _, k in 
 local function lspent() local n = 0 for _, k in pairs(LEG) do n = n + k end return n + lstaged() end
 function LAVAILABLE() return LPOINTS and (LPOINTS - lstaged()) end
 function C_Traits.GetConfigIDByTreeID(treeID) if LEGACY_ON and LCONFIG[treeID] then return LCONFIG[treeID] end return base.GetConfigIDByTreeID(treeID) end
+-- With LDEFS, a Legacy node has an entry whose definition LDEF[node] = { overrideName, overrideIcon, spellID } names, as the
+-- game's do (the strip draws the game's name and icon, else the table's)
+LDEFS, LDEF = false, {}
 function C_Traits.GetNodeInfo(configID, nodeID)
   if not LTREE[configID] then return base.GetNodeInfo(configID, nodeID) end
   local p = perkOf(configID, nodeID)
-  return p and { ID = nodeID, ranksPurchased = lrank(configID, nodeID), maxRanks = p.max } or nil
+  return p and { ID = nodeID, ranksPurchased = lrank(configID, nodeID), maxRanks = p.max, entryIDs = LDEFS and { nodeID * 2 } or nil } or nil
 end
+function C_Traits.GetEntryInfo(configID, entryID)
+  if LTREE[configID] then return { definitionID = entryID / 2 } end
+  return base.GetEntryInfo(configID, entryID)
+end
+function C_Traits.GetDefinitionInfo(defID) return LDEF[defID] or base.GetDefinitionInfo(defID) end
 function C_Traits.GetTreeCurrencyInfo(configID, treeID, excludeStaged)
   if not LTREE[configID] then return base.GetTreeCurrencyInfo(configID, treeID, excludeStaged) end
   if not LPOINTS then return {} end
@@ -301,6 +309,7 @@ function RESET(api)
   FACTION, EQUIPPED, BAGS, ITEMS = "Alliance", {}, {}, {}
   FA.RouteData = SHIPPED
   LEGACY_ON, LEG, LSTAGED, LPOINTS, LCAP, LREFUSE, LFAIL_COMMIT = false, {}, {}, 16, 16, nil, false
+  LDEFS, LDEF = false, {}
 end
 -- a node's id by tree and talent index, for setting OTHER
 function NODE(tab, index) for id, n in pairs(NODES) do if n.tab == tab and n.talent == TREE[tab][index] then return id end end end
@@ -2161,6 +2170,71 @@ class Legacy(unittest.TestCase):
         self.assertEqual(L.eval("FA.Legacy.PERKS[12].afterIndex"), 11)  # Talented after Well Rested
         self.assertIsNone(L.eval("FA.Legacy.PERKS[1].afterIndex"))
 
+    # ---- what the strip is drawn from (#1594)
+    def test_every_perk_has_the_sites_icon_and_every_tree_a_short_name(self):
+        icons = L.eval("function() local out = {} for i, p in ipairs(FA.Legacy.PERKS) do out[i] = p.icon end return out end")()
+        self.assertEqual(len(icons), 27)
+        self.assertTrue(all(isinstance(v, str) and v for v in icons.values()))
+        self.assertEqual((icons[1], icons[2], icons[12], icons[27]), ("achievement_profession_chefhat", "inv_misc_pocketwatch_03", "ability_marksmanship", "inv_scroll_03"))
+        self.assertEqual([t.short for t in L.eval("FA.Legacy.TREES").values()], ["Prof", "Adv", "Res"])
+
+    def order(self, byName, build=70425):
+        return L.eval("""function(build)
+          local out = {}
+          for i, s in ipairs(FA.Legacy.Order({ name = 'P', ranks = LPLAN(%s), build = build })) do out[i] = s.tree.name:sub(1, 3) .. ' ' .. s.name .. ' ' .. s.rank end
+          return table.concat(out, '\\n')
+        end""" % lua_table(byName))(build)
+
+    def test_order_is_every_rank_of_the_plan_from_nothing_in_the_buying_order(self):
+        order = self.order(GATHERER).split("\n")
+        self.assertEqual(len(order), 16)
+        self.assertEqual(order[:7], ["Pro Working Overtime %d" % n for n in range(1, 6)] + ["Pro Master Chef 1", "Adv Well Rested 1"])
+        self.assertEqual(order[-5:], ["Adv Talented 1", "Res Gourmand 1", "Res Gourmand 2", "Res Gourmand 3", "Res The Quick and the Dead 1"])
+        # it is what Progress lists for an account with nothing, and doesn't read the account
+        self.assertEqual(self.steps(GATHERER)[0], self.order(GATHERER))
+        L.run("LSET({ ['Working Overtime'] = 5, ['Well Rested'] = 2 })")
+        self.assertEqual(self.order(GATHERER).split("\n"), order)
+        # a perk the plan can't buy as it stands has no rank in it, and a plan from another build has none
+        self.assertEqual(self.order({"Master Chef": 1}), "")
+        self.assertEqual(self.order(GATHERER, 70001), "")
+
+    def test_apply_with_a_limit_buys_that_many_ranks_of_the_first_tree(self):
+        ok, said = self.apply_limit(GATHERER, 1)
+        self.assertEqual((ok, said), (True, "Working Overtime"))
+        self.assertEqual(self.log(), ["buy Working Overtime", "commit 1187"])
+        self.assertEqual(self.account(), {"Working Overtime": 1})
+        # more than the plan has left is what it has; none refused is not asked for
+        L.run("LOG = {}")
+        ok, said = self.apply_limit(GATHERER, 99)
+        self.assertEqual(said.split(", ")[0], "Working Overtime x4")
+        self.assertEqual(self.account(), GATHERER)
+
+    def apply_limit(self, byName, limit):
+        return L.eval("function(limit) return FA.ApplyLegacy({ name = 'P', id = 1, ranks = LPLAN(%s), build = 70425 }, limit) end" % lua_table(byName))(limit)
+
+    def test_a_refused_single_rank_rolls_back_its_tree(self):
+        L.run("LREFUSE = 110290")
+        ok, said = self.apply_limit(GATHERER, 1)
+        self.assertEqual((ok, said), (False, "The game wouldn't take Working Overtime rank 1 (Professions). Nothing was bought in Professions."))
+        self.assertEqual(self.log(), ["refused Working Overtime", "rollback 1187"])
+        self.assertEqual(self.account(), {})
+        L.run("LREFUSE = nil; LOG = {}; LFAIL_COMMIT = true")
+        ok, said = self.apply_limit(GATHERER, 1)
+        self.assertEqual((ok, said), (False, "The game wouldn't apply the Professions perks. Nothing was bought in Professions."))
+        self.assertEqual(self.log(), ["buy Working Overtime", "commit 1187", "rollback 1187"])
+
+    def test_applying_is_true_while_the_addons_commit_casts(self):
+        self.assertFalse(L.eval("FA.Legacy.Applying()"))
+        L.run("LFAIL_COMMIT = 'late'")
+        self.apply_limit(GATHERER, 1)
+        self.assertTrue(L.eval("FA.Legacy.Applying()"))       # staged, and the game hasn't answered
+        L.run("EVENT('CONFIG_COMMIT_FAILED', 201)")
+        self.assertFalse(L.eval("FA.Legacy.Applying()"))
+        L.run("LFAIL_COMMIT = 'late'")
+        self.apply_limit(GATHERER, 1)
+        L.run("LSTAGED = {}")                                  # the event never came, but nothing is staged any more
+        self.assertFalse(L.eval("FA.Legacy.Applying()"))
+
     # ---- the plans kept for the account
     def test_plans_are_kept_for_the_account_and_one_is_followed(self):
         L.run("FA.Legacy.Add({ { name = 'A', ranks = LPLAN({ ['Working Overtime'] = 5 }), build = 70425 }, { name = 'B', ranks = LPLAN({}), build = 70001 } })")
@@ -2492,7 +2566,7 @@ class UI(unittest.TestCase):
         L.run("FA.HookTalentFrame(); FA.HookCharacterFrame(); FA.HookLegacyFrame(); FA.SetupOptions()")
 
     def setUp(self):
-        L.run("RESET('traits'); POPUPS = {}; LIT = nil; LSHOWN_TREE = 1187; LegacySystemFrame:Show(); ForeverArmouryTalentStrip.GetHeight = nil; FA.Refresh(); FA.RefreshLegacy()")   # the refresh puts out what a test left lit
+        L.run("RESET('traits'); POPUPS = {}; LIT = nil; LSHOWN_TREE = 1187; LegacySystemFrame:Show(); ForeverArmouryTalentStrip.GetHeight = nil; ForeverArmouryLegacyStrip.GetHeight = nil; FA.Refresh(); FA.RefreshLegacy()")   # the refresh puts out what a test left lit
 
     def panel(self, key):
         return L.eval("function(k) local p = ForeverArmouryTalentPanel; if k == 'status' then return p.status.text end "
@@ -3705,7 +3779,7 @@ class UI(unittest.TestCase):
         self.assertIn("Pick a plan to follow.", status)
         self.assertIn("Legacy points: not told by the game, cap 16.", status)   # the trees are not there (no configs)
         self.assertEqual((apply, enabled, why, plans, perks), ("Apply", False, "Pick a plan to follow first.", "", ""))
-        self.assertEqual(L.eval("ForeverArmouryLegacyPanel.plansHeader.text"), "Plans (0)")
+        self.assertEqual(L.eval("ForeverArmouryLegacyPanel.plansHeader.text.text"), "Plans (0)")
         # it sits beside the Legacy window
         self.assertTrue(L.eval("ForeverArmouryLegacyPanel.points[1][2] == LegacySystemFrame"))
         self.assertEqual(L.eval("ForeverArmouryLegacyPanel.points[1][3]"), "TOPRIGHT")
@@ -3717,6 +3791,7 @@ class UI(unittest.TestCase):
         ok, said = L.eval("function(t) return FA.ImportText(t) end")(SAMPLE)
         self.assertTrue(ok)
         self.assertEqual(said, "1 Legacy plan imported for the account. Following Gatherer's Path.")
+        L.run("FA.db.legacyPlansOpen = true; FA.RefreshLegacy()")   # following a plan closes the list unless it was opened on purpose
         shown, status, apply, enabled, why, plans, perks = self.legacy()
         self.assertEqual(plans, "> Gatherer's Path")
         self.assertIn("Following |cffffd100Gatherer's Path|r.", status)
@@ -3782,6 +3857,7 @@ class UI(unittest.TestCase):
         ok, said = L.eval("function(t) return FA.ImportText(t) end")("FAL1-70001-Old-" + SAMPLE_RANKS)
         self.assertTrue(ok)
         self.assertIn("1 Legacy plan imported for the account. 1 is from another client build than the addon's Legacy perks (70425), so it is shown and never bought. Following Old.", said)
+        L.run("FA.db.legacyPlansOpen = true; FA.RefreshLegacy()")
         shown, status, apply, enabled, why, plans, perks = self.legacy()
         self.assertEqual(plans, "> |cffff6060! |rOld")
         self.assertIn("client build 70001", status)
@@ -3795,6 +3871,7 @@ class UI(unittest.TestCase):
 
     def test_the_plan_list_follows_forgets_and_scrolls(self):
         codes = " ".join("FAL1-70425-P%d-%s" % (n, "0" * 26 + str(n % 6)) for n in range(1, 9))
+        L.run("FA.db.legacyPlansOpen = true")   # picking a plan closes the list unless it was opened on purpose
         L.run("FA.ImportText('%s')" % codes)
         self.assertEqual(L.eval("#FA.Legacy.Plans()"), 8)
         self.assertIsNone(L.eval("FA.Legacy.Active()"))   # eight at once: none is followed for the account
@@ -3863,6 +3940,507 @@ class UI(unittest.TestCase):
         self.assertEqual(self.lit(), [])
         L.run("LegacySystemFrame.TreePage = SAVED; FA.RefreshLegacy()")
         self.assertEqual(self.lit(), ["Working Overtime"])
+
+    def test_the_trees_are_switched_by_the_games_event_or_the_panels_own_method(self):
+        # no window panel at all: nothing to switch
+        L.run("SAVEDP = LegacySystemFrame.TreePage; LegacySystemFrame.TreePage = false")   # (the mock answers a function for a key that is nil)
+        self.addCleanup(L.run, "LegacySystemFrame.TreePage = SAVEDP")
+        self.assertFalse(L.eval("FA.Legacy.CanShowTree()"))
+        self.assertFalse(L.eval("FA.Legacy.ShowTree(FA.Legacy.TREES[2])"))
+        L.run("LegacySystemFrame.TreePage = SAVEDP")
+        panel = "LegacySystemFrame.TreePage.LegacyTreeTraitPanel"
+        # the panel's SelectTree, with its index in the game's list (the table's place when the game's list isn't there)
+        L.run("SELECTED = nil; %s.SelectTree = function(self, index) SELECTED = index end" % panel)
+        self.assertTrue(L.eval("FA.Legacy.CanShowTree()"))
+        self.assertTrue(L.eval("FA.Legacy.ShowTree(FA.Legacy.TREES[2])"))
+        self.assertEqual(L.eval("SELECTED"), 2)
+        # the game's list says where a tree is
+        L.run("LegacyTreeData = { { treeID = 1189 }, { treeID = 1187 }, { treeID = 1188 } }")
+        self.addCleanup(L.run, "LegacyTreeData = nil; %s.SelectTree = nil; EventRegistry = nil; %s.IsVisible = nil" % (panel, panel))
+        L.eval("FA.Legacy.ShowTree(FA.Legacy.TREES[2])")
+        self.assertEqual(L.eval("SELECTED"), 3)
+        # the event, which the tree tabs send, when there is one: the trees page first if the window shows another
+        L.run("SENT = {}; EventRegistry = { TriggerEvent = function(_, name, a) SENT[#SENT + 1] = name .. ':' .. tostring(a) end }; SELECTED = nil")
+        L.run("%s.IsVisible = function() return false end" % panel)
+        self.assertTrue(L.eval("FA.Legacy.ShowTree(FA.Legacy.TREES[3])"))
+        self.assertEqual(list(L.eval("SENT").values()), ["Legacy.SelectPage:3", "Legacy.SelectTree:1"])
+        self.assertIsNone(L.eval("SELECTED"))
+        L.run("%s.SelectTree = false" % panel)
+        self.assertTrue(L.eval("FA.Legacy.CanShowTree()"))   # the event alone does it
+        L.run("EventRegistry = nil")
+        self.assertFalse(L.eval("FA.Legacy.CanShowTree()"))
+        self.assertFalse(L.eval("FA.Legacy.ShowTree(FA.Legacy.TREES[2])"))
+        # a tree is on show when the panel has buttons for its perks
+        L.run("LSHOWN_TREE = 1188")
+        self.assertEqual([L.eval("FA.Legacy.TreeShown(FA.Legacy.TREES[%d])" % t) for t in (1, 2, 3)], [False, True, False])
+
+    # ---- the strip of icons beside the Legacy window (#1594)
+    def follow_legacy(self, code=SAMPLE):
+        L.run("LEGACY_ON = true; FA.ImportText('%s'); PRINTED = ''; LOG = {}" % code)
+        L.run("for _, config in pairs(LCONFIG) do EVENT('TRAIT_CONFIG_UPDATED', config) end")   # an earlier test's commit is over
+
+    def lstrip(self):
+        """What the Legacy strip shows, an icon a line: kind, perk and rank, then | and its tree badge (@), label under it ([]), check (v), gold border and alpha."""
+        text = L.eval("""function()
+          local out = {}
+          for i, ic in ipairs(ForeverArmouryLegacyStrip.icons) do
+            if ic.entry and ic.shown then
+              local e, rank = ic.entry, ic.rank.text or ''
+              local decor = {}
+              if ic.level.shown then decor[#decor + 1] = '@' .. ic.level.text end
+              if ic.label.shown then decor[#decor + 1] = '[' .. ic.label.text .. ']' end
+              if ic.check.shown then decor[#decor + 1] = 'v' end
+              if ic.edge.shown then decor[#decor + 1] = 'edge' end
+              if ic.tex.alpha ~= 1 then decor[#decor + 1] = 'a=' .. ic.tex.alpha end
+              out[#out + 1] = e.kind .. ' ' .. e.name .. (rank ~= '' and (' ' .. rank) or '') .. '|' .. table.concat(decor, ' ')
+            end
+          end
+          return table.concat(out, '\\n')
+        end""")()
+        return text.split("\n") if text else []
+
+    def licon(self, kind, name, rank=""):
+        for i, line in enumerate(self.lstrip(), 1):
+            if line.split("|")[0] == " ".join(x for x in (kind, name, rank) if x):
+                return i
+        self.fail("no %s %s %s in %s" % (kind, name, rank, self.lstrip()))
+
+    def lhover(self, i, event="OnEnter"):
+        L.run("local ic = ForeverArmouryLegacyStrip.icons[%d]; ic.scripts.%s(ic)" % (i, event))
+
+    def ltip(self, i):
+        self.lhover(i)
+        return list(L.eval("TIP.lines").values())
+
+    def lclick(self, i, shift=False):
+        L.run("SHIFT = %s; local ic = ForeverArmouryLegacyStrip.icons[%d]; ic.scripts.OnClick(ic, 'LeftButton'); SHIFT = false" % ("true" if shift else "false", i))
+
+    def lhighlighted(self, i):
+        return L.eval("ForeverArmouryLegacyStrip.icons[%d].highlight.alpha" % i) == 1
+
+    def loverlay(self, name):
+        """The addon's overlays on a perk's button in the tree: "glow=true hover=false", the next-perk glow and the hover's."""
+        return L.eval("""function(name)
+          local node
+          for _, p in ipairs(FA.Legacy.PERKS) do if p.name == name then node = p.node end end
+          local b = LBUTTONS[node]; local out = {}
+          for _, c in ipairs(b and b.children or {}) do out[#out + 1] = (rawget(c.regions[1], 'color') and 'hover=' or 'glow=') .. tostring(c.shown) end
+          table.sort(out)
+          return table.concat(out, ' ')
+        end""")(name)
+
+    def lnext(self):
+        for i, line in enumerate(self.lstrip(), 1):
+            if line.startswith("next "):
+                return i
+        self.fail("no next icon in %s" % self.lstrip())
+
+    def nothing_bought(self):
+        self.assertEqual(list(L.eval("LOG").values()), [])
+        self.assertEqual(L.eval("#POPUPS"), 0)
+        self.assertEqual(self.said(), "")
+
+    GATHERER_STRIP = (["next Working Overtime 1/5|[Now] edge"] + ["coming Working Overtime %d/5|@Prof" % n for n in range(2, 6)] +
+                      ["coming Master Chef 1/5|@Prof"] + ["coming Well Rested %d/5|@Adv" % n for n in range(1, 6)] + ["coming Talented 1/5|@Adv"] +
+                      ["coming Gourmand %d/3|@Res" % n for n in range(1, 4)] + ["coming The Quick and the Dead 1/2|@Res"])
+
+    def test_the_legacy_strip_shows_the_plans_ranks_in_the_buying_order(self):
+        self.assertFalse(L.eval("ForeverArmouryLegacyStrip.shown"))   # no plan: no strip, and the panel against the window
+        self.assertTrue(L.eval("ForeverArmouryLegacyPanel.points[1][2] == LegacySystemFrame"))
+        self.follow_legacy()
+        self.assertTrue(L.eval("ForeverArmouryLegacyStrip.shown"))
+        self.assertEqual(self.lstrip(), self.GATHERER_STRIP)
+        self.assertEqual(len(self.lstrip()), 16)
+        self.assertEqual(L.eval("ForeverArmouryLegacyStrip.more.shown"), False)
+        # it hangs on the window's right edge past the side tabs, a strip's width wide; the panel against the strip
+        self.assertEqual(L.eval("ForeverArmouryLegacyStrip.width"), 58)
+        self.assertTrue(L.eval("ForeverArmouryLegacyStrip.points[1][2] == LegacySystemFrame"))
+        self.assertEqual(L.eval("ForeverArmouryLegacyStrip.points[1][3]"), "TOPRIGHT")
+        self.assertEqual(L.eval("ForeverArmouryLegacyStrip.points[1][4]"), 42)
+        self.assertEqual(L.eval("ForeverArmouryLegacyStrip.points[2][3]"), "BOTTOMRIGHT")
+        self.assertTrue(L.eval("ForeverArmouryLegacyPanel.points[1][2] == ForeverArmouryLegacyStrip"))
+        self.assertEqual(L.eval("#ForeverArmouryLegacyPanel.points"), 1)   # moved, not added to
+        # the talent window's strip is its own
+        self.assertFalse(L.eval("ForeverArmouryTalentStrip.shown"))
+        # the glow on the next perk of the tree on show is the panel's, as before
+        self.assertEqual(self.lit(), ["Working Overtime"])
+        # no plan followed again: the strip goes and the panel is against the window
+        L.run("FA.Legacy.SetActive(nil); FA.RefreshLegacy()")
+        self.assertFalse(L.eval("ForeverArmouryLegacyStrip.shown"))
+        self.assertTrue(L.eval("ForeverArmouryLegacyPanel.points[1][2] == LegacySystemFrame"))
+        self.assertGreaterEqual(L.eval("ForeverArmouryLegacyPanel.points[1][4]"), 42)
+
+    def test_the_legacy_strip_marks_the_ranks_the_account_has_as_taken(self):
+        self.follow_legacy()
+        L.run("LSET({ ['Working Overtime'] = 5, ['Master Chef'] = 1, ['Well Rested'] = 2 }); LPOINTS = 8; FA.RefreshLegacy()")
+        lines = self.lstrip()
+        self.assertEqual(lines[:8], ["taken Working Overtime %d/5|v a=0.45" % n for n in range(1, 6)] + ["taken Master Chef 1/5|v a=0.45"] + ["taken Well Rested %d/5|v a=0.45" % n for n in (1, 2)])
+        self.assertEqual(lines[8], "next Well Rested 3/5|[Now] edge")
+        self.assertEqual(lines[9:11], ["coming Well Rested 4/5|@Adv", "coming Well Rested 5/5|@Adv"])
+        self.assertEqual(len(lines), 16)
+        # the ranks taken are the ones the account has, whatever order it bought them in: the rest is what Apply buys
+        L.run("LEG = {}; LSET({ ['Gourmand'] = 3 }); LPOINTS = 13; FA.RefreshLegacy()")
+        lines = self.lstrip()
+        self.assertEqual(lines[:3], ["taken Gourmand %d/3|v a=0.45" % n for n in (1, 2, 3)])
+        self.assertEqual(lines[3], "next Working Overtime 1/5|[Now] edge")
+        self.assertEqual(len(lines), 16)
+        # every rank bought: the whole plan taken, no next, no Now
+        L.run("LEG = {}; LSET({ ['Working Overtime'] = 5, ['Master Chef'] = 1, ['Well Rested'] = 5, ['Talented'] = 1, ['Gourmand'] = 3, ['The Quick and the Dead'] = 1 }); LPOINTS = 0; FA.RefreshLegacy()")
+        lines = self.lstrip()
+        self.assertEqual(len(lines), 16)
+        self.assertTrue(all(line.endswith("|v a=0.45") for line in lines))
+        self.assertIn("Every rank of this plan is bought.", self.legacy()[1])
+
+    def test_the_next_icon_says_now_with_a_point_and_under_the_cap_else_wait(self):
+        self.follow_legacy()
+        self.assertEqual(self.lstrip()[0], "next Working Overtime 1/5|[Now] edge")
+        L.run("LPOINTS = 0; FA.RefreshLegacy()")
+        self.assertEqual(self.lstrip()[0], "next Working Overtime 1/5|[wait] edge")
+        L.run("LPOINTS = nil; FA.RefreshLegacy()")   # the game won't say: the cap is what limits
+        self.assertEqual(self.lstrip()[0], "next Working Overtime 1/5|[Now] edge")
+        L.run("LPOINTS = 5; LCAP = 2; LSET({ ['Reinforce'] = 2 }); FA.RefreshLegacy()")   # the cap is spent on a perk the plan doesn't have
+        self.assertEqual(self.lstrip()[0], "next Working Overtime 1/5|[wait] edge")
+        self.assertFalse(self.lhighlighted(1))
+
+    def test_the_legacy_strip_is_for_a_plan_that_can_be_followed(self):
+        L.run("LEGACY_ON = true")
+        L.run("FA.ImportText('FAL1-70001-Old-" + SAMPLE_RANKS + "')")   # another client build: shown in the list, never bought
+        self.assertFalse(L.eval("ForeverArmouryLegacyStrip.shown"))
+        L.run("LEGACY_ON = false; FA.ImportText('%s'); FA.Legacy.SetActive(FA.Legacy.Plans()[2].id); FA.RefreshLegacy()" % SAMPLE)   # the game gives no trees yet
+        self.assertFalse(L.eval("ForeverArmouryLegacyStrip.shown"))
+        L.run("LEGACY_ON = true; FA.RefreshLegacy()")
+        self.assertTrue(L.eval("ForeverArmouryLegacyStrip.shown"))
+
+    def test_the_legacy_strip_follows_the_window_and_the_part_switch(self):
+        self.follow_legacy()
+        self.lhover(1)
+        self.assertEqual(self.loverlay("Working Overtime"), "glow=true hover=true")
+        L.run("LegacySystemFrame:Hide(); FA.RefreshLegacy()")
+        self.assertFalse(L.eval("ForeverArmouryLegacyStrip.shown"))
+        self.assertEqual(self.loverlay("Working Overtime"), "glow=false hover=false")
+        self.assertFalse(L.eval("TIP.shown"))
+        L.run("LegacySystemFrame:Show(); FA.RefreshLegacy()")
+        self.assertTrue(L.eval("ForeverArmouryLegacyStrip.shown"))
+        L.run("FA.SetPart('legacy', false)")
+        self.assertFalse(L.eval("ForeverArmouryLegacyStrip.shown"))
+        L.run("FA.SetPart('legacy', true)")
+        self.assertTrue(L.eval("ForeverArmouryLegacyStrip.shown"))
+
+    # ---- the icons and names are the game's, else the site's
+    def test_the_icons_and_names_are_the_games_else_the_sites(self):
+        self.follow_legacy()
+        self.assertEqual(L.eval("ForeverArmouryLegacyStrip.icons[1].tex.texture"), "Interface\\Icons\\inv_misc_pocketwatch_03")
+        L.run("LDEFS = true; LDEF = { [110290] = { overrideName = 'Overtime', overrideIcon = 1234, spellID = 5555 } }; FA.RefreshLegacy()")
+        self.assertEqual(L.eval("ForeverArmouryLegacyStrip.icons[1].tex.texture"), 1234)
+        self.assertEqual(self.lstrip()[0], "next Overtime 1/5|[Now] edge")
+        self.assertEqual(L.eval("ForeverArmouryLegacyStrip.icons[1].entry.name"), "Overtime")
+        # a perk whose definition the game doesn't give is the site's
+        i = self.licon("coming", "Well Rested", "1/5")
+        self.assertEqual(L.eval("ForeverArmouryLegacyStrip.icons[%d].tex.texture" % i), "Interface\\Icons\\spell_nature_sleep")
+        # a definition with a name and no icon takes the site's icon
+        L.run("LDEF[110290] = { overrideName = 'Overtime' }; FA.RefreshLegacy()")
+        self.assertEqual(L.eval("ForeverArmouryLegacyStrip.icons[1].tex.texture"), "Interface\\Icons\\inv_misc_pocketwatch_03")
+
+    # ---- hover (#1594)
+    def test_hover_lights_the_perk_when_its_tree_is_on_show(self):
+        self.follow_legacy()
+        i = self.licon("next", "Working Overtime", "1/5")
+        self.lhover(i)
+        self.assertEqual(self.loverlay("Working Overtime"), "glow=true hover=true")   # over the next perk's glow, which stays
+        self.assertEqual(L.eval("function() for _, c in ipairs(LBUTTONS[110290].children) do local col = rawget(c.regions[1], 'color'); if col then return col[3] end end end")(), 1)   # the blue
+        self.lhover(i, "OnLeave")
+        self.assertEqual(self.loverlay("Working Overtime"), "glow=true hover=false")
+        # a perk of the tree on show that isn't the next: only the hover
+        j = self.licon("coming", "Working Overtime", "3/5")
+        self.lhover(j)
+        self.assertEqual(self.loverlay("Working Overtime"), "glow=true hover=true")
+        self.lhover(j, "OnLeave")
+        # a perk of a tree that isn't on show has no button: nothing lit, no error
+        k = self.licon("coming", "Well Rested", "1/5")
+        self.lhover(k)
+        self.assertNotIn("true", self.loverlay("Well Rested"))
+        self.assertEqual(self.loverlay("Working Overtime"), "glow=true hover=false")
+        self.lhover(k, "OnLeave")
+        # shown, the tree's perks light
+        L.run("LSHOWN_TREE = 1188; FA.RefreshLegacy()")
+        self.lhover(k)
+        self.assertEqual(self.loverlay("Well Rested"), "glow=true hover=true")
+        self.lhover(k, "OnLeave")
+
+    def test_hover_writes_nothing_on_the_games_button(self):
+        self.follow_legacy()
+        self.lhover(self.licon("next", "Working Overtime", "1/5"))
+        keys = L.eval("function() local out = {} for k in pairs(LBUTTONS[110290]) do out[#out + 1] = k end table.sort(out) return table.concat(out, ',') end")()
+        self.assertEqual(keys, "children,points,regions")
+        self.assertTrue(L.eval("function() for _, c in ipairs(LBUTTONS[110290].children) do if c.parent ~= LBUTTONS[110290] then return false end end return #LBUTTONS[110290].children >= 2 end")())
+
+    def test_hover_shows_the_perks_tooltip(self):
+        self.follow_legacy()
+        i = self.licon("coming", "Working Overtime", "2/5")
+        lines = self.ltip(i)
+        self.assertTrue(L.eval("TIP.owner == ForeverArmouryLegacyStrip.icons[%d]" % i))
+        self.assertEqual(L.eval("TIP.text"), "Working Overtime")   # the game gave no spell: the name
+        self.assertIsNone(L.eval("TIP.spell"))
+        self.assertEqual(lines, ["Rank 2 of 5"])              # its tree is on show; a coming rank has no click
+        self.assertTrue(L.eval("TIP.shown"))
+        self.lhover(i, "OnLeave")
+        self.assertFalse(L.eval("TIP.shown"))
+        # a perk of a tree that isn't on show says where it is
+        self.assertEqual(self.ltip(self.licon("coming", "Gourmand", "2/3")), ["Rank 2 of 3", "In the Resourcefulness tree"])
+        # the game's tooltip for the perk when its definition has a spell
+        L.run("LDEFS = true; LDEF = { [110291] = {}, [110290] = { overrideName = 'Overtime', overrideIcon = 1, spellID = 5555 } }; FA.RefreshLegacy()")
+        self.ltip(self.licon("next", "Overtime", "1/5"))
+        self.assertEqual(L.eval("TIP.spell"), 5555)
+        # a taken rank says so
+        L.run("LSET({ ['Working Overtime'] = 2 }); LPOINTS = 14; FA.RefreshLegacy()")
+        self.assertEqual(self.ltip(self.licon("taken", "Overtime", "2/5"))[:2], ["Rank 2 of 5", "Taken"])
+
+    def test_hover_survives_a_redraw_and_follows_the_tree_on_show(self):
+        self.follow_legacy()
+        k = self.licon("coming", "Well Rested", "1/5")
+        self.lhover(k)
+        self.assertNotIn("true", self.loverlay("Well Rested"))
+        # the person picks the Adventure tree with the mouse on the icon: the game says so, the strip lights the perk
+        L.run("LSHOWN_TREE = 1188; EVENT('TRAIT_NODE_CHANGED'); FLUSH()")
+        self.assertEqual(self.loverlay("Well Rested"), "glow=true hover=true")
+        self.assertTrue(L.eval("TIP.shown"))
+        self.assertEqual(list(L.eval("TIP.lines").values()), ["Rank 1 of 5"])   # and no longer says where it is
+        L.run("FA.RefreshLegacy()")   # the game redraws while the mouse is on the icon
+        self.assertEqual(self.loverlay("Well Rested"), "glow=true hover=true")
+        # the plan let go with the mouse still there
+        L.run("FA.Legacy.SetActive(nil); FA.RefreshLegacy()")
+        self.assertEqual(self.loverlay("Well Rested"), "glow=false hover=false")
+        self.assertFalse(L.eval("TIP.shown"))
+
+    # ---- a click on the strip's next icon buys its rank (#1594)
+    def test_a_click_buys_the_next_rank_and_commits_its_tree(self):
+        self.follow_legacy()
+        i = self.licon("next", "Working Overtime", "1/5")
+        self.assertTrue(self.lhighlighted(i))
+        self.assertEqual(self.ltip(i), ["Rank 1 of 5", "Click to buy it", "Shift-click to buy all 16"])
+        self.lclick(i)
+        self.assertEqual(list(L.eval("LOG").values()), ["buy Working Overtime", "commit 1187"])   # one rank, not the sixteen Apply would
+        self.assertEqual(L.eval("LEG[110290]"), 1)
+        self.assertEqual(L.eval("#POPUPS"), 0)   # no confirm for one rank
+        self.assertEqual(self.said(), "Bought as Gatherer's Path says: Working Overtime.")
+        # the strip has moved on, through the refresh
+        lines = self.lstrip()
+        self.assertEqual(lines[:2], ["taken Working Overtime 1/5|v a=0.45", "next Working Overtime 2/5|[Now] edge"])
+        L.run("EVENT('TRAIT_CONFIG_UPDATED', 201); PRINTED = ''; LOG = {}")
+        self.lclick(self.licon("next", "Working Overtime", "2/5"))
+        self.assertEqual(L.eval("LEG[110290]"), 2)
+        self.assertEqual(self.said(), "Bought as Gatherer's Path says: Working Overtime.")
+
+    def test_a_click_on_any_other_icon_does_nothing(self):
+        self.follow_legacy()
+        for kind, name, rank in (("coming", "Working Overtime", "2/5"), ("coming", "Well Rested", "1/5")):
+            i = self.licon(kind, name, rank)
+            self.assertFalse(self.lhighlighted(i))
+            self.assertNotIn("Click to buy it", self.ltip(i))
+            self.lclick(i)
+            self.lclick(i, shift=True)
+        self.nothing_bought()
+        L.run("LSET({ ['Working Overtime'] = 1 }); LPOINTS = 15; FA.RefreshLegacy()")
+        i = self.licon("taken", "Working Overtime", "1/5")
+        self.assertNotIn("Click to buy it", self.ltip(i))
+        self.lclick(i)
+        self.nothing_bought()
+
+    def test_a_shift_click_is_apply_through_its_confirm(self):
+        self.follow_legacy()
+        self.lclick(1, shift=True)
+        popup = L.eval("POPUPS[1]")
+        self.assertEqual(popup.which, "FOREVERARMOURY_LEGACY_APPLY")
+        self.assertEqual(popup.text, "Buy 16 Legacy ranks as Gatherer's Path says?\n\nWorking Overtime x5, Master Chef, Well Rested x5, Talented, Gourmand x3, The Quick and the Dead")
+        self.assertEqual(L.eval("#LOG"), 0)   # nothing is bought before the confirm
+        L.run("StaticPopupDialogs.FOREVERARMOURY_LEGACY_APPLY.OnAccept(nil, POPUPS[1].data)")
+        self.assertEqual(L.eval("LEG[110301]"), 5)
+        self.assertIn("Bought as Gatherer's Path says: Working Overtime x5", self.said())
+        self.assertEqual(len(self.lstrip()), 16)
+        self.assertTrue(all(line.endswith("|v a=0.45") for line in self.lstrip()))
+
+    def test_a_refused_purchase_rolls_back_its_tree_and_is_said(self):
+        self.follow_legacy()
+        L.run("LREFUSE = 110290")
+        self.lclick(1)
+        self.assertEqual(list(L.eval("LOG").values()), ["refused Working Overtime", "rollback 1187"])
+        self.assertEqual(self.said(), "The game wouldn't take Working Overtime rank 1 (Professions). Nothing was bought in Professions.")
+        self.assertIsNone(L.eval("LEG[110290]"))
+        self.assertEqual(self.lstrip()[0], "next Working Overtime 1/5|[Now] edge")   # as it was
+        L.run("LREFUSE = nil; LOG = {}; PRINTED = ''; LFAIL_COMMIT = true")
+        self.lclick(1)
+        self.assertEqual(list(L.eval("LOG").values()), ["buy Working Overtime", "commit 1187", "rollback 1187"])
+        self.assertEqual(self.said(), "The game wouldn't apply the Professions perks. Nothing was bought in Professions.")
+        self.assertIsNone(L.eval("LEG[110290]"))
+        # a commit the game fails later is rolled back by its event, and said
+        L.run("LFAIL_COMMIT = 'late'; LOG = {}; PRINTED = ''")
+        self.lclick(1)
+        self.assertEqual(self.said(), "Bought as Gatherer's Path says: Working Overtime.")   # the cast started: as Apply says
+        L.run("EVENT('CONFIG_COMMIT_FAILED', 201); FLUSH()")
+        self.assertIn("The game didn't apply the Legacy perks, so they were rolled back. Nothing was bought.", self.said())
+        self.assertIsNone(L.eval("LSTAGED[201]"))
+        self.assertEqual(self.lstrip()[0], "next Working Overtime 1/5|[Now] edge")
+
+    def test_a_click_that_cant_buy_says_why_as_the_tooltips_last_line(self):
+        self.follow_legacy()
+        why = lambda: self.ltip(self.lnext())[-1]
+        L.run("LPOINTS = 0; FA.RefreshLegacy()")
+        self.assertEqual(why(), "You have no Legacy points to spend.")
+        self.assertFalse(self.lhighlighted(1))
+        self.lclick(1)
+        self.nothing_bought()
+        L.run("LPOINTS = 5; LCAP = 2; LSET({ ['Reinforce'] = 2 }); FA.RefreshLegacy()")
+        self.assertEqual(why(), "You have spent the seasonal cap of 2 Legacy points.")
+        L.run("LPOINTS = 16; LCAP = 16; LEG = {}; COMBAT = true; EVENT('PLAYER_REGEN_DISABLED'); FLUSH()")
+        self.assertEqual(why(), "You can't change Legacy perks in combat.")
+        self.lclick(self.lnext())
+        self.nothing_bought()
+        L.run("COMBAT = false; EVENT('PLAYER_REGEN_ENABLED'); FLUSH(); LSTAGED[202] = { [110301] = 1 }; FA.RefreshLegacy()")
+        self.assertEqual(why(), "The Legacy window has changes waiting. Apply or undo them there first.")   # (a rank staged counts as had: the next icon is further down)
+        self.lclick(self.lnext())
+        self.nothing_bought()
+        L.run("LSTAGED = {}; EVENT('TRAIT_NODE_CHANGED'); FLUSH()")
+        self.assertEqual(self.ltip(self.lnext())[-2:], ["Click to buy it", "Shift-click to buy all 16"])
+        # a second click while the first rank's commit casts finds the ranks staged and is ignored
+        L.run("LFAIL_COMMIT = 'late'")
+        self.lclick(self.lnext())
+        self.assertEqual(L.eval("#LOG"), 2)
+        self.assertEqual(why(), "That rank is being bought.")
+        self.assertFalse(self.lhighlighted(self.lnext()))
+        L.run("LOG = {}; POPUPS = {}")
+        self.lclick(self.lnext())
+        self.lclick(self.lnext(), shift=True)
+        self.assertEqual(list(L.eval("LOG").values()), [])
+        self.assertEqual(L.eval("#POPUPS"), 0)
+
+    # ---- a click on a rank of a tree that isn't on show switches the window to it
+    ADVENTURE = "FAL1-70425-Adventure-" + "0" * 10 + "3" + "0" * 16   # three ranks of Well Rested
+
+    def test_a_click_switches_to_the_perks_tree_and_buys(self):
+        self.follow_legacy(self.ADVENTURE)
+        panel = "LegacySystemFrame.TreePage.LegacyTreeTraitPanel"
+        L.run("SENT = {}; EventRegistry = { TriggerEvent = function(_, name, a) SENT[#SENT + 1] = name .. ':' .. tostring(a); if name == 'Legacy.SelectTree' then LSHOWN_TREE = ({ 1187, 1188, 1189 })[a] end end }")
+        self.addCleanup(L.run, "EventRegistry = nil; %s.SelectTree = nil; %s.IsVisible = nil; SENT = nil" % (panel, panel))
+        i = self.licon("next", "Well Rested", "1/5")
+        self.assertEqual(self.ltip(i), ["Rank 1 of 5", "In the Adventure tree", "Click to buy it", "Shift-click to buy all 3"])
+        self.assertTrue(self.lhighlighted(i))
+        self.lclick(i)
+        self.assertEqual(list(L.eval("SENT").values()), ["Legacy.SelectTree:2"])   # the game's own event, the way its tabs send it
+        self.assertEqual(L.eval("LSHOWN_TREE"), 1188)
+        self.assertEqual(list(L.eval("LOG").values()), ["buy Well Rested", "commit 1188"])
+        self.assertEqual(L.eval("LEG[110301]"), 1)
+        self.assertEqual(self.said(), "Bought as Adventure says: Well Rested.")
+        # the tree is on show now: the next click doesn't switch, and the perk is lit
+        L.run("SENT = {}; LOG = {}; PRINTED = ''; EVENT('TRAIT_CONFIG_UPDATED', 202)")
+        self.lclick(self.licon("next", "Well Rested", "2/5"))
+        self.assertEqual(len(L.eval("SENT")), 0)
+        self.assertEqual(list(L.eval("LOG").values()), ["buy Well Rested", "commit 1188"])
+        # the window on another page: the trees page first
+        L.run("LSHOWN_TREE = 1187; SENT = {}; LOG = {}; EVENT('TRAIT_CONFIG_UPDATED', 202); FLUSH(); FA.RefreshLegacy(); %s.IsVisible = function() return false end" % panel)
+        self.lclick(self.licon("next", "Well Rested", "3/5"))
+        self.assertEqual(list(L.eval("SENT").values()), ["Legacy.SelectPage:3", "Legacy.SelectTree:2"])
+        self.assertEqual(L.eval("LEG[110301]"), 3)
+
+    def test_a_click_asks_the_panel_when_there_is_no_event(self):
+        self.follow_legacy(self.ADVENTURE)
+        panel = "LegacySystemFrame.TreePage.LegacyTreeTraitPanel"
+        L.run("SELECTED = nil; %s.SelectTree = function(self, index) SELECTED = index; LSHOWN_TREE = ({ 1187, 1188, 1189 })[index] end" % panel)
+        self.addCleanup(L.run, "%s.SelectTree = nil" % panel)
+        self.lclick(self.licon("next", "Well Rested", "1/5"))
+        self.assertEqual(L.eval("SELECTED"), 2)
+        self.assertEqual(list(L.eval("LOG").values()), ["buy Well Rested", "commit 1188"])
+
+    def test_when_the_tree_cant_be_switched_the_tooltip_names_the_tab_and_the_click_does_nothing(self):
+        self.follow_legacy(self.ADVENTURE)
+        panel = "LegacySystemFrame.TreePage.LegacyTreeTraitPanel"
+        L.run("%s.SelectTree = false" % panel)   # no event, no method
+        self.addCleanup(L.run, "%s.SelectTree = nil" % panel)
+        i = self.licon("next", "Well Rested", "1/5")
+        self.assertEqual(self.ltip(i), ["Rank 1 of 5", "In the Adventure tree", "Open the Adventure tab in the Legacy window to buy it."])
+        self.assertFalse(self.lhighlighted(i))
+        self.lclick(i)
+        self.lclick(i, shift=True)
+        self.nothing_bought()
+        # the person opens the tab: it works without a switch
+        L.run("LSHOWN_TREE = 1188; FA.RefreshLegacy()")
+        self.assertEqual(self.ltip(i)[-2:], ["Click to buy it", "Shift-click to buy all 3"])
+        self.lclick(i)
+        self.assertEqual(L.eval("LEG[110301]"), 1)
+
+    # ---- the strip is shared: its size and its scroll are the settings of both
+    def fit_legacy(self, n, size=44):
+        k = round(size * 0.3)
+        L.run("ForeverArmouryLegacyStrip.GetHeight = function() return %d end; FA.RefreshLegacy()" % (24 + k + 2 + 8 + 36 + 16 + (size + 4) * n))
+
+    def test_the_legacy_strip_scrolls_and_follows_the_size_setting(self):
+        self.follow_legacy()
+        self.fit_legacy(6)
+        names = lambda: [line.split("|")[0] for line in self.lstrip()]
+        self.assertEqual(names(), ["next Working Overtime 1/5", "coming Working Overtime 2/5", "coming Working Overtime 3/5", "coming Working Overtime 4/5", "coming Working Overtime 5/5", "coming Master Chef 1/5"])
+        self.assertEqual((L.eval("ForeverArmouryLegacyStrip.more.shown"), L.eval("ForeverArmouryLegacyStrip.more.count")), (True, 10))
+        self.assertEqual((L.eval("ForeverArmouryLegacyStrip.up.shown"), L.eval("ForeverArmouryLegacyStrip.down.shown")), (True, True))
+        L.run("local s = ForeverArmouryLegacyStrip; s.scripts.OnMouseWheel(s, -1)")
+        self.assertEqual(names()[0], "coming Working Overtime 2/5")
+        L.run("for _ = 1, 100 do local s = ForeverArmouryLegacyStrip; s.scripts.OnMouseWheel(s, -1) end")
+        self.assertEqual(names()[-1], "coming The Quick and the Dead 1/2")
+        L.run("local b = ForeverArmouryLegacyStrip.up; b.scripts.OnClick(b)")   # a page less one
+        self.assertEqual(names()[-1], "coming Well Rested 5/5")
+        # the points changing (a click's commit) takes the view back to the next
+        L.run("EVENT('TRAIT_CONFIG_UPDATED', 201)")
+        L.run("FA.RefreshLegacy()")
+        self.assertEqual(names()[0], "next Working Overtime 1/5")
+        # the settings are the talent strip's too
+        L.run("local s = ForeverArmouryStripSize; s.scripts.OnValueChanged(s, 52)")
+        self.assertEqual(L.eval("FA.db.strip.size"), 52)
+        self.assertEqual((L.eval("ForeverArmouryLegacyStrip.width"), L.eval("ForeverArmouryLegacyStrip.icons[1].width")), (66, 52))
+        L.run("local s = ForeverArmouryStripComing; s.scripts.OnValueChanged(s, 0); s = ForeverArmouryStripPast; s.scripts.OnValueChanged(s, 0)")
+        self.fit_legacy(6, 52)
+        self.assertEqual(names()[0], "next Working Overtime 1/5")
+
+    # ---- the plans section (#1594)
+    def test_the_plans_list_is_a_section_that_opens_and_closes(self):
+        MINUS, PLUS = "Interface\\Buttons\\UI-MinusButton-Up", "Interface\\Buttons\\UI-PlusButton-Up"
+        header = lambda: L.eval("function() local h = ForeverArmouryLegacyPanel.plansHeader; return h.text.text, h.sign.texture end")()
+        listed = lambda: L.eval("function() local n = 0 for _, r in ipairs(ForeverArmouryLegacyPanel.rows) do if r.shown then n = n + 1 end end return n end")()
+        height = lambda: L.eval("ForeverArmouryLegacyPanel.height")
+        press = lambda: L.run("local h = ForeverArmouryLegacyPanel.plansHeader; h.scripts.OnClick(h)")
+        self.assertEqual((header(), listed()), (("Plans (0)", MINUS), 0))
+        L.run("FA.ImportText('FAL1-70425-A-%s FAL1-70425-B-%s')" % (SAMPLE_RANKS, "0" * 27))
+        self.assertIsNone(L.eval("FA.Legacy.Active()"))
+        self.assertEqual((header(), listed()), (("Plans (2)", MINUS), 2))   # open until a plan is followed
+        self.assertIsNone(L.eval("FA.db.legacyPlansOpen"))                    # nobody has chosen: the default is derived
+        # following one closes it, and the header says which
+        L.run("local r = ForeverArmouryLegacyPanel.rows[1]; r.scripts.OnClick(r)")
+        self.assertEqual((header(), listed()), (("A", PLUS), 0))
+        self.assertEqual((L.eval("ForeverArmouryLegacyPanel.up.shown"), L.eval("ForeverArmouryLegacyPanel.more.shown")), (False, False))
+        closed = height()
+        self.assertIsNone(L.eval("FA.db.legacyPlansOpen"))
+        press()
+        self.assertEqual((header(), listed()), (("Plans (2)", MINUS), 2))
+        self.assertTrue(L.eval("FA.db.legacyPlansOpen"))
+        self.assertEqual(height() - closed, 2 * 21)   # the panel is as tall as what it shows
+        self.assertEqual(L.eval("ForeverArmouryLegacyPanel.perks[1].shown"), True)   # the perks stay under it
+        self.assertIn("Master Chef", L.eval("ForeverArmouryLegacyPanel.perks[1].name.text") + L.eval("ForeverArmouryLegacyPanel.perks[2].name.text"))
+        press()
+        self.assertEqual((header(), listed()), (("A", PLUS), 0))
+        self.assertEqual(L.eval("FA.db.legacyPlansOpen"), False)
+        # kept for the account: a chosen state outlasts a plan being followed or let go
+        L.run("FA.Legacy.SetActive(nil); FA.RefreshLegacy()")
+        self.assertEqual((header(), listed()), (("Plans (2)", PLUS), 0))
+        L.run("FA.db.legacyPlansOpen = 'yes'; FA.RefreshLegacy()")   # a saved value that isn't a choice is no choice
+        self.assertEqual(header()[1], MINUS)
+        # a name is drawn as typed
+        L.run("FA.db.legacyPlansOpen = nil; FA.ImportText('FAL1-70425-A%7CcffFF0000Red%7Cr-" + SAMPLE_RANKS + "'); FA.Legacy.SetActive(FA.Legacy.Plans()[3].id); FA.RefreshLegacy()")
+        self.assertEqual(header()[0], "A||cffFF0000Red||r")
+
+    def test_the_closed_plans_list_leaves_the_arrows_and_the_wheel_alone(self):
+        L.run("FA.db.legacyPlansOpen = true")
+        L.run("FA.ImportText('" + " ".join("FAL1-70425-P%d-%s" % (n, "0" * 26 + str(n % 6)) for n in range(1, 9)) + "')")
+        self.assertTrue(L.eval("ForeverArmouryLegacyPanel.down.shown"))
+        L.run("FA.db.legacyPlansOpen = false; FA.RefreshLegacy()")
+        self.assertEqual((L.eval("ForeverArmouryLegacyPanel.up.shown"), L.eval("ForeverArmouryLegacyPanel.down.shown"), L.eval("ForeverArmouryLegacyPanel.more.shown")), (False, False, False))
+        L.run("FA.db.legacyPlansOpen = true; FA.RefreshLegacy()")
+        self.assertTrue(L.eval("ForeverArmouryLegacyPanel.down.shown"))
 
     def test_slash_legacy(self):
         L.run("LTOGGLED = 0; LegacySystemFrame:Show()")
