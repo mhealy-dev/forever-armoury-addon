@@ -3790,6 +3790,23 @@ class UI(unittest.TestCase):
         self.assertEqual(L.eval("ForeverArmouryLegacyPanel.points[1][4]"), -2)
         self.assertEqual(L.eval("ForeverArmouryLegacyPanel.points[1][5]"), -304)
 
+    def test_the_tabs_end_is_read_safely(self):
+        # the game's answer as the mock gives it: 1000 - 700 + 4
+        self.assertEqual(L.eval("FA.LegacyTabsEnd()"), 304)
+        # an answer that isn't a number (a secret value, say) gives the fallback, quietly
+        L.run("PRINTED = ''; local keep = LegacySystemFrame.GetTop; LegacySystemFrame.GetTop = function() return {} end; GOT = FA.LegacyTabsEnd(); LegacySystemFrame.GetTop = keep")
+        self.assertEqual(L.eval("GOT"), 284)
+        self.assertEqual(L.eval("PRINTED"), "")
+        # a read that errors gives the fallback and says so, and the panel is still made (it was, in setUpClass)
+        L.run("PRINTED = ''; local keep = LegacySystemFrame.LegacyTreeTab.GetBottom; LegacySystemFrame.LegacyTreeTab.GetBottom = function() error('no rect') end; GOT = FA.LegacyTabsEnd(); LegacySystemFrame.LegacyTreeTab.GetBottom = keep")
+        self.assertEqual(L.eval("GOT"), 284)
+        self.assertIn("Couldn't read where the Legacy window's tabs end", L.eval("PRINTED"))
+        self.assertIn("no rect", L.eval("PRINTED"))
+        # no tab at all: the fallback, quietly
+        L.run("PRINTED = ''; local keep = LegacySystemFrame.LegacyTreeTab; LegacySystemFrame.LegacyTreeTab = nil; GOT = FA.LegacyTabsEnd(); LegacySystemFrame.LegacyTreeTab = keep")
+        self.assertEqual(L.eval("GOT"), 284)
+        self.assertEqual(L.eval("PRINTED"), "")
+
     def test_import_follow_light_and_apply_a_legacy_plan(self):
         L.run("LEGACY_ON = true")
         ok, said = L.eval("function(t) return FA.ImportText(t) end")(SAMPLE)
