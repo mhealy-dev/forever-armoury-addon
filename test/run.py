@@ -1894,13 +1894,7 @@ frame = function(name)
     if k == "Show" then return function(self) rawset(self, "shown", true) end end
     if k == "Hide" then return function(self) rawset(self, "shown", false) end end
     if k == "SetScript" then return function(self, event, fn) local s = rawget(self, "scripts") or {}; rawset(self, "scripts", s); s[event] = fn end end
-    if k == "HookScript" then return function(self, event, fn)
-      HOOKS[#HOOKS + 1] = fn
-      local h = rawget(self, "hooks") or {}
-      rawset(self, "hooks", h)
-      h[event] = h[event] or {}
-      h[event][#h[event] + 1] = fn
-    end end
+    if k == "HookScript" then return function(self, event, fn) HOOKS[#HOOKS + 1] = fn end end
     return function() return frame() end
   end })
 end
@@ -1923,11 +1917,24 @@ GameTooltip.AddLine = function(_, text) TIP.lines[#TIP.lines + 1] = text end
 GameTooltip.Show = function() TIP.shown = true end
 GameTooltip.Hide = function() TIP.shown = false end
 GameTooltip.IsOwned = function(_, frame) return TIP.owner == frame end
--- the game's comparison with what's worn: SHOW_COMPARISON(tip) shows one and runs the OnShow hooks the addon put on it
+-- the game's comparison with what's worn, placed as TooltipComparisonManager does: AnchorShoppingTooltips shows the
+-- tooltips it is given and then sets their points (left of the tooltip when SIDE is "left", else right of it), after
+-- Initialize cleared them; COMPARE(first, second) is the game building or rebuilding the comparison for GameTooltip
 ShoppingTooltip1, ShoppingTooltip2 = frame("ShoppingTooltip1"), frame("ShoppingTooltip2")
-SHOW_COMPARISON = function(tip)
-  tip:Show()
-  for _, fn in ipairs(rawget(tip, "hooks") and rawget(tip, "hooks").OnShow or {}) do fn(tip) end
+SIDE = "left"
+TooltipComparisonManager = {}
+function TooltipComparisonManager:AnchorShoppingTooltips(first, second)
+  for i, shown in ipairs({ first, second }) do
+    local tip = i == 1 and ShoppingTooltip1 or ShoppingTooltip2
+    tip:SetShown(shown)
+    tip:SetPoint("TOP", self.tooltip, "TOP")
+    tip:SetPoint(SIDE == "left" and "RIGHT" or "LEFT", self.tooltip, SIDE == "left" and "LEFT" or "RIGHT")
+  end
+end
+function COMPARE(first, second, tooltip)
+  TooltipComparisonManager.tooltip = tooltip or GameTooltip
+  ShoppingTooltip1:ClearAllPoints(); ShoppingTooltip2:ClearAllPoints()
+  TooltipComparisonManager:AnchorShoppingTooltips(first, second)
 end
 UISpecialFrames = {}
 tinsert = table.insert
@@ -2583,7 +2590,7 @@ class UI(unittest.TestCase):
 
     def setUp(self):
         L.run("RESET('traits'); POPUPS = {}; LIT = nil; LSHOWN_TREE = 1187; LegacySystemFrame:Show(); ForeverArmouryTalentStrip.GetHeight = nil; ForeverArmouryLegacyStrip.GetHeight = nil; FA.Refresh(); FA.RefreshLegacy()")   # the refresh puts out what a test left lit
-        L.run("for _, t in ipairs({ ShoppingTooltip1, ShoppingTooltip2 }) do t:Hide(); t:ClearAllPoints(); t.GetLeft = nil end; ForeverArmouryGearPanel.GetRight = nil")
+        L.run("for _, t in ipairs({ ShoppingTooltip1, ShoppingTooltip2 }) do t:Hide(); t:ClearAllPoints(); t.GetLeft = nil end; ForeverArmouryGearPanel.GetRight = nil; SIDE = 'left'")
 
     def panel(self, key):
         return L.eval("function(k) local p = ForeverArmouryTalentPanel; if k == 'status' then return p.status.text end "
@@ -3721,54 +3728,73 @@ class UI(unittest.TestCase):
           end
           return table.concat(out, ";") end""")(tip)
 
-    def compare_shown(self, tip, left, panel_right=1200):
-        """The game shows a comparison tooltip whose left edge is `left` (a Lua expression), the panel's right edge at `panel_right`."""
-        L.run("ForeverArmouryGearPanel.GetRight = function() return %s end; %s.GetLeft = function() return %s end; "
-              "%s:ClearAllPoints(); %s:SetPoint('TOPRIGHT', GameTooltip, 'TOPLEFT'); SHOW_COMPARISON(%s)" % (panel_right, tip, left, tip, tip, tip))
+    GAMES = "TOP GameTooltip TOP;RIGHT GameTooltip LEFT"   # where the game puts a comparison when it goes left of the tooltip
+
+    def compare(self, first_left, second_left=None, panel_right="1200", tooltip="GameTooltip"):
+        """The game builds the comparison (COMPARE): the first comparison tooltip's left edge is the Lua expression
+        `first_left`, the second's `second_left` (shown only when given), the panel's right edge `panel_right`."""
+        L.run("ForeverArmouryGearPanel.GetRight = function() return %s end; ShoppingTooltip1.GetLeft = function() return %s end; "
+              "ShoppingTooltip2.GetLeft = function() return %s end; COMPARE(true, %s, %s)"
+              % (panel_right, first_left, second_left or "nil", "true" if second_left else "false", tooltip))
 
     def test_a_comparison_over_the_panel_stacks_under_the_tooltip(self):
         self.route_at()
-        row = self.piece_row("Ironforge Greathammer")
-        self.gear_hover(row)
-        # the game put it left of the tooltip, over the panel: under the tooltip instead
-        self.compare_shown("ShoppingTooltip1", 900)
+        self.gear_hover(self.piece_row("Ironforge Greathammer"))
+        self.compare("900")
         self.assertEqual(self.compare_points("ShoppingTooltip1"), "TOPLEFT GameTooltip BOTTOMLEFT -4")
         # a second piece goes under the first
-        self.compare_shown("ShoppingTooltip2", 600)
-        self.assertEqual(self.compare_points("ShoppingTooltip2"), "TOPLEFT ShoppingTooltip1 BOTTOMLEFT 0")
+        self.compare("900", "600")
         self.assertEqual(self.compare_points("ShoppingTooltip1"), "TOPLEFT GameTooltip BOTTOMLEFT -4")
+        self.assertEqual(self.compare_points("ShoppingTooltip2"), "TOPLEFT ShoppingTooltip1 BOTTOMLEFT 0")
+        # a rebuild (the game placed it again, the tooltips already shown) is stacked again
+        self.compare("900", "600")
+        self.assertEqual(self.compare_points("ShoppingTooltip1"), "TOPLEFT GameTooltip BOTTOMLEFT -4")
+        self.assertEqual(self.compare_points("ShoppingTooltip2"), "TOPLEFT ShoppingTooltip1 BOTTOMLEFT 0")
+
+    def test_only_the_second_over_the_panel_goes_under_the_tooltip_when_the_first_is_hidden(self):
+        self.route_at()
+        self.gear_hover(self.piece_row("Ironforge Greathammer"))
+        L.run("ShoppingTooltip2.GetLeft = function() return 600 end; ShoppingTooltip1.GetLeft = function() return 900 end; "
+              "ForeverArmouryGearPanel.GetRight = function() return 1200 end; COMPARE(false, true)")
+        self.assertEqual(self.compare_points("ShoppingTooltip1"), self.GAMES)   # hidden: not touched
+        self.assertEqual(self.compare_points("ShoppingTooltip2"), "TOPLEFT GameTooltip BOTTOMLEFT -4")
 
     def test_a_comparison_right_of_the_panel_is_left_alone(self):
         self.route_at()
         self.gear_hover(self.piece_row("Ironforge Greathammer"))
-        self.compare_shown("ShoppingTooltip1", 1200)   # the panel's edge: not over it
-        self.assertEqual(self.compare_points("ShoppingTooltip1"), "TOPRIGHT GameTooltip TOPLEFT")
-        self.compare_shown("ShoppingTooltip2", 1700)
-        self.assertEqual(self.compare_points("ShoppingTooltip2"), "TOPRIGHT GameTooltip TOPLEFT")
+        L.run("SIDE = 'right'")
+        self.compare("1200", "1700")   # the panel's edge: not over it
+        right = "TOP GameTooltip TOP;LEFT GameTooltip RIGHT"
+        self.assertEqual(self.compare_points("ShoppingTooltip1"), right)
+        self.assertEqual(self.compare_points("ShoppingTooltip2"), right)
 
     def test_a_client_that_wont_give_the_positions_keeps_the_games_placement(self):
         self.route_at()
         self.gear_hover(self.piece_row("Ironforge Greathammer"))
         for left in ("error('secret')", "nil", "'secret'"):
-            self.compare_shown("ShoppingTooltip1", left)
-            self.assertEqual(self.compare_points("ShoppingTooltip1"), "TOPRIGHT GameTooltip TOPLEFT", left)
-        L.run("ForeverArmouryGearPanel.GetRight = function() error('secret') end; ShoppingTooltip1.GetLeft = function() return 900 end; SHOW_COMPARISON(ShoppingTooltip1)")
-        self.assertEqual(self.compare_points("ShoppingTooltip1"), "TOPRIGHT GameTooltip TOPLEFT")
+            self.compare(left)
+            self.assertEqual(self.compare_points("ShoppingTooltip1"), self.GAMES, left)
+        self.compare("900", panel_right="error('secret')")
+        self.assertEqual(self.compare_points("ShoppingTooltip1"), self.GAMES)
 
     def test_a_comparison_for_another_tooltip_is_left_alone(self):
         self.route_at()
         row = self.piece_row("Ironforge Greathammer")
-        kept = "TOPRIGHT GameTooltip TOPLEFT"
         # after leaving the row: a bag item's comparison
         self.gear_hover(row)
         self.gear_hover(row, "OnLeave")
-        self.compare_shown("ShoppingTooltip1", 900)
-        self.assertEqual(self.compare_points("ShoppingTooltip1"), kept)
+        self.compare("900")
+        self.assertEqual(self.compare_points("ShoppingTooltip1"), self.GAMES)
         # the tooltip taken over by another owner while the row's flag is up
         self.gear_hover(row)
         L.run("GameTooltip:SetOwner(UIParent, 'ANCHOR_RIGHT')")
-        self.compare_shown("ShoppingTooltip1", 900)
-        self.assertEqual(self.compare_points("ShoppingTooltip1"), kept)
+        self.compare("900")
+        self.assertEqual(self.compare_points("ShoppingTooltip1"), self.GAMES)
+        # a comparison the game builds for a tooltip that isn't GameTooltip
+        self.gear_hover(row)
+        L.run("OTHER = { name = 'OtherTooltip' }")
+        self.compare("900", tooltip="OTHER")
+        self.assertNotIn("BOTTOMLEFT", self.compare_points("ShoppingTooltip1"))
 
     def test_a_comparison_the_game_places_while_the_item_is_drawn_is_caught_after_show(self):
         self.route_at()
@@ -3779,18 +3805,18 @@ class UI(unittest.TestCase):
                    TIP.item = id
                    ForeverArmouryGearPanel.GetRight = function() return 1200 end
                    ShoppingTooltip1.GetLeft = function() return nil end
-                   ShoppingTooltip1:ClearAllPoints(); ShoppingTooltip1:SetPoint('TOPRIGHT', GameTooltip, 'TOPLEFT')
-                   SHOW_COMPARISON(ShoppingTooltip1)
+                   COMPARE(true, false)
                  end
                  GameTooltip.Show = function() TIP.shown = true; ShoppingTooltip1.GetLeft = function() return 900 end end""")
         self.gear_hover(self.piece_row("Ironforge Greathammer"))
         self.assertEqual(self.compare_points("ShoppingTooltip1"), "TOPLEFT GameTooltip BOTTOMLEFT -4")
 
-    def test_the_comparison_hooks_are_put_once_and_only_on_the_tooltips_there_are(self):
-        self.assertEqual(L.eval("#ShoppingTooltip1.hooks.OnShow"), 1)
-        self.assertEqual(L.eval("#ShoppingTooltip2.hooks.OnShow"), 1)
+    def test_the_comparison_is_hooked_once_on_the_games_manager(self):
+        self.route_at()
+        hooks = L.eval("#HOOKS")
         L.run("FA.HookCharacterFrame()")
-        self.assertEqual(L.eval("#ShoppingTooltip1.hooks.OnShow"), 1)
+        self.gear_hover(self.piece_row("Ironforge Greathammer"))
+        self.assertEqual(L.eval("#HOOKS"), hooks)
 
     def test_the_hover_names_the_source_in_full_as_the_game_has_it(self):
         self.route_at()

@@ -35,8 +35,10 @@ local hovered
 
 --[[ The game's comparison with what's worn (ShoppingTooltip1, and 2 for a second piece) goes beside the tooltip, on the
      left of it when the screen has no room on the right, which is over the panel's list. Then they stack under the
-     tooltip instead. The game places them while it draws the item, before our Show(), and again as they show, so this runs
-     on their OnShow and after Show(). A client that won't give a position, or errors on it, keeps the game's placement. ]]
+     tooltip instead. The game places them in TooltipComparisonManager:AnchorShoppingTooltips, which shows them and then sets
+     their points, each time it builds or rebuilds the comparison (a rebuild, when an item's data arrives, shows nothing
+     anew), so this runs after that call, and once more after our Show() in case the position wasn't there yet. A client
+     that won't give a position, or errors on it, keeps the game's placement. ]]
 local function overPanel(tip)
   local ok, covers = pcall(function()
     local left, edge = tip:GetLeft(), panel:GetRight()
@@ -46,18 +48,30 @@ local function overPanel(tip)
 end
 
 local function stackComparison()
-  local first, second = ShoppingTooltip1, ShoppingTooltip2
-  if not (hovered and first and first:IsShown()) and not (hovered and second and second:IsShown()) then return end
-  if GameTooltip.IsOwned and not GameTooltip:IsOwned(hovered) then return end
-  if not (first and first:IsShown() and overPanel(first)) and not (second and second:IsShown() and overPanel(second)) then return end
-  if first then
-    first:ClearAllPoints()
-    first:SetPoint("TOPLEFT", GameTooltip, "BOTTOMLEFT", 0, -4)
+  if not hovered or (GameTooltip.IsOwned and not GameTooltip:IsOwned(hovered)) then return end
+  local shown, over = {}, false
+  for _, tip in ipairs({ ShoppingTooltip1 or false, ShoppingTooltip2 or false }) do
+    if tip and tip:IsShown() then
+      shown[#shown + 1] = tip
+      over = over or overPanel(tip)
+    end
   end
-  if first and second and second:IsShown() then
-    second:ClearAllPoints()
-    second:SetPoint("TOPLEFT", first, "BOTTOMLEFT", 0, 0)
+  if not over then return end
+  local above, gap = GameTooltip, -4
+  for _, tip in ipairs(shown) do
+    tip:ClearAllPoints()
+    tip:SetPoint("TOPLEFT", above, "BOTTOMLEFT", 0, gap)
+    above, gap = tip, 0
   end
+end
+
+local comparisonHooked
+local function hookComparison()
+  if comparisonHooked or not (hooksecurefunc and TooltipComparisonManager and TooltipComparisonManager.AnchorShoppingTooltips) then return end
+  comparisonHooked = true
+  hooksecurefunc(TooltipComparisonManager, "AnchorShoppingTooltips", function(self)
+    if self.tooltip == GameTooltip then stackComparison() end
+  end)
 end
 
 local function hideTooltip()
@@ -71,6 +85,7 @@ end
 local function showTooltip(row)
   local piece = row.piece
   if not piece then return end
+  hookComparison()   -- if the game's manager wasn't there when the character window hooked
   GameTooltip:SetOwner(row, "ANCHOR_NONE")
   hovered = row
   GameTooltip:ClearAllPoints()
@@ -240,8 +255,7 @@ function FA.HookCharacterFrame()
     CharacterFrame:HookScript("OnShow", FA.RefreshGear)
     CharacterFrame:HookScript("OnHide", FA.RefreshGear)
   end
-  if ShoppingTooltip1 then ShoppingTooltip1:HookScript("OnShow", stackComparison) end
-  if ShoppingTooltip2 then ShoppingTooltip2:HookScript("OnShow", stackComparison) end
+  hookComparison()
   events = CreateFrame("Frame")
   for _, e in ipairs({ "PLAYER_EQUIPMENT_CHANGED", "BAG_UPDATE_DELAYED", "PLAYER_LEVEL_UP", "GET_ITEM_INFO_RECEIVED", "ITEM_DATA_LOAD_RESULT", "QUEST_DATA_LOAD_RESULT" }) do
     pcall(events.RegisterEvent, events, e)
