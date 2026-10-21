@@ -205,7 +205,7 @@ local function placeByPosition(recs, count)
     if not r.tab and not r.skip then
       local x = r.info.posX
       local groups = r.info.groupIDs and #r.info.groupIDs or 0
-      local lack = r.lack or (groups > 0 and (groups == 1 and "its group is not one of the tree's" or "none of its " .. groups .. " groups is one of the tree's") or "no group")
+      local lack = (groups > 0 and (groups == 1 and "its group is not one of the tree's" or "none of its " .. groups .. " groups is one of the tree's") or "no group")
       if cuts then
         r.tab = 1
         for _, at in ipairs(cuts) do if x >= at then r.tab = r.tab + 1 end end
@@ -246,16 +246,16 @@ local function readNodes(configID)
     elseif not (n.posX and n.posY) then rec.skip = "no position"
     else
       --[[ the live client gives a node 3 to 7 groups, the tree's talent group being any of them: the one that is a display group
-           names the tree (one group of the list; if two trees' groups are in it, the node can't say and goes by position) ]]
-      local found, many = nil, false
+           names the tree; if the groups of two trees are among them, the first is taken and /fa debug nodes says so ]]
+      local found, other = nil, nil
       for _, g in ipairs(n.groupIDs or {}) do
         if tabOf[g] then
-          if found and tabOf[found] ~= tabOf[g] then many = true end
-          found = found or g
+          if not found then found = g elseif tabOf[g] ~= tabOf[found] then other = other or g end
         end
       end
-      if found and not many then rec.tab, rec.why = tabOf[found], "group " .. found
-      elseif many then rec.lack = "its groups name more than one tree" end
+      if found then
+        rec.tab, rec.why = tabOf[found], "group " .. found .. (other and (", the first of its groups that is a tree's; group " .. other .. " is another tree's too") or "")
+      end
     end
     recs[#recs + 1] = rec
   end
@@ -525,18 +525,27 @@ end
 
 --[[ Every node of the active config as the game gives it, one line each, and the tree the addon gave it and why: the raw
      fields that decide a talent's place (/fa debug nodes). ]]
+local function groupList(ids, named)
+  if not ids or #ids == 0 then return "" end
+  local out = {}
+  for i, g in ipairs(ids) do out[i] = tostring(g) .. (named[g] and ("=" .. named[g]) or "") end
+  return " [" .. table.concat(out, " ") .. "]"
+end
+
 function Talents.DumpNodes()
   local configID = activeConfig()
   local groups, recs
   if configID then groups, recs = readNodes(configID) end
   if not recs then return { "The game hasn't given its talents yet. Open the talent window and try again." } end
-  local lines = { #recs .. (#recs == 1 and " node" or " nodes") .. " in config " .. tostring(configID) .. "'s tree." }
+  local lines = { #recs .. (#recs == 1 and " node" or " nodes") .. " in config " .. tostring(configID) .. "'s tree; in groupIDs a tree's group is marked with its name." }
+  local named = {}
+  for _, g in ipairs(groups) do named[g.groupID] = g.displayName or "?" end
   for _, r in ipairs(recs) do
     local n = r.info
     local to = r.tab and ("tree " .. r.tab .. " " .. (groups[r.tab].displayName or "?") .. " (" .. r.why .. ")") or ("not read: " .. r.skip)
     lines[#lines + 1] = "node " .. tostring(n.ID) .. " posX " .. tostring(n.posX) .. " posY " .. tostring(n.posY) ..
       " maxRanks " .. tostring(n.maxRanks) .. " totalMaxRanks " .. tostring(n.totalMaxRanks) ..
-      " groupIDs " .. (n.groupIDs and #n.groupIDs or "nil") .. " entryIDs " .. (n.entryIDs and #n.entryIDs or "nil") ..
+      " groupIDs " .. (n.groupIDs and #n.groupIDs or "nil") .. groupList(n.groupIDs, named) .. " entryIDs " .. (n.entryIDs and #n.entryIDs or "nil") ..
       " isVisible " .. tostring(n.isVisible) .. " type " .. tostring(n.type) .. " subTreeID " .. tostring(n.subTreeID) .. " -> " .. to
   end
   return lines

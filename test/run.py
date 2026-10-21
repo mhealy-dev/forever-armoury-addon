@@ -768,14 +768,15 @@ class EveryNode(unittest.TestCase):
         counts = L.eval("function() local v = FA.Talents.View(); return v.byPosition[1], v.byPosition[2], v.byPosition[3], #v.skipped end")()
         self.assertEqual(tuple(counts), (0, 0, 0, 0))
         nodes = list(L.eval("FA.Talents.DumpNodes()").values())
-        self.assertEqual(nodes[1], "node 101 posX 1020 posY 1500 maxRanks 3 totalMaxRanks nil groupIDs 4 entryIDs 1 isVisible true type 0 subTreeID nil -> tree 1 Arms (group 10)")
+        self.assertEqual(nodes[1], "node 101 posX 1020 posY 1500 maxRanks 3 totalMaxRanks nil groupIDs 4 [5001 5002 10=Arms 5003] entryIDs 1 isVisible true type 0 subTreeID nil -> tree 1 Arms (group 10)")
         self.assertEqual(L.eval("FA.Talents.Dump()[#FA.Talents.Dump()]"), "Every talent has a cell of its own.")
-        # a node whose groups name two of the trees can't say which, and goes by its x
+        # a node whose groups name two of the trees takes the first, and /fa debug nodes says so
         node = site_node(2, 4, 3)   # Enrage
         L.run("BOTH_TREES[%d] = true; FA.Talents.Forget()" % node)
         self.check_site()
         line = [l for l in L.eval("FA.Talents.DumpNodes()").values() if l.startswith("node %d " % node)][0]
-        self.assertIn("-> tree 2 Fury (its groups name more than one tree, so by x: within 5020 to 6820)", line)
+        self.assertIn("groupIDs 2 [20=Fury 30=Protection]", line)
+        self.assertTrue(line.endswith("-> tree 2 Fury (group 20, the first of its groups that is a tree's; group 30 is another tree's too)"), line)
 
     def test_nodes_with_no_maxranks_and_no_group_read_and_sort(self):
         live_warrior(max_ranks=True, groups=False)
@@ -842,7 +843,7 @@ class EveryNode(unittest.TestCase):
         live_warrior(max_ranks=True, groups=False)
         L.run("PRINTED = ''; SlashCmdList.FOREVERARMOURY('debug nodes')")
         printed = [l.replace("|cffffd100Forever Armoury:|r ", "") for l in L.eval("PRINTED").strip().split("\n")]
-        self.assertEqual(printed[0], "52 nodes in config 7's tree.")
+        self.assertEqual(printed[0], "52 nodes in config 7's tree; in groupIDs a tree's group is marked with its name.")
         node_lines = [l for l in printed if l.startswith("node ")]
         self.assertEqual(len(node_lines), 52)
         self.assertEqual(node_lines[0], "node 101 posX 1020 posY 1500 maxRanks 0 totalMaxRanks nil groupIDs 0 entryIDs 1 isVisible true type 0 subTreeID nil"
@@ -851,7 +852,7 @@ class EveryNode(unittest.TestCase):
         # with the groups in place it says the group
         live_warrior(max_ranks=False)
         first = L.eval("FA.Talents.DumpNodes()[2]")
-        self.assertEqual(first, "node 101 posX 1020 posY 1500 maxRanks 3 totalMaxRanks nil groupIDs 1 entryIDs 1 isVisible true type 0 subTreeID nil -> tree 1 Arms (group 10)")
+        self.assertEqual(first, "node 101 posX 1020 posY 1500 maxRanks 3 totalMaxRanks nil groupIDs 1 [10=Arms] entryIDs 1 isVisible true type 0 subTreeID nil -> tree 1 Arms (group 10)")
         # and /fa debug stays what it was
         L.run("PRINTED = ''; SlashCmdList.FOREVERARMOURY('debug')")
         self.assertIn("1. Arms", L.eval("PRINTED"))
