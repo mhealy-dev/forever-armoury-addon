@@ -29,15 +29,31 @@ local function itemLink(id)
   return "|cff808080item " .. id .. "|r", false
 end
 
---[[ The hover: the game's tooltip for the item, to the right of the panel, then where the piece comes from and the level the
-     route has it at. SetItemByID, else the item's link, else its name and id, so the hover shows something whatever the
-     client has. ]]
+--[[ Which side of the panel the tooltip goes: the right, unless the screen has no room there for it and the game's
+     comparison with what's worn (the game then puts the comparison to the left of the tooltip, over the panel); then
+     the tooltip goes left of the panel and the comparison left of that. A client that won't give the positions, or
+     errors on them, gets the right. ]]
+local TOOLTIPS_ROOM = 620   -- two tooltips side by side
+local function tooltipSide()
+  local ok, room = pcall(function()
+    local right, edge = panel:GetRight(), UIParent:GetRight()
+    if type(right) ~= "number" or type(edge) ~= "number" then return nil end
+    return edge - right
+  end)
+  if ok and type(room) == "number" and room < TOOLTIPS_ROOM then return "left" end
+  return "right"
+end
+
+--[[ The hover: the game's tooltip for the item, beside the panel (tooltipSide says which side), then where the piece comes
+     from and the level the route has it at. SetItemByID, else the item's link, else its name and id, so the hover shows
+     something whatever the client has. ]]
 local function showTooltip(row)
   local piece = row.piece
   if not piece then return end
   GameTooltip:SetOwner(row, "ANCHOR_NONE")
   GameTooltip:ClearAllPoints()
-  GameTooltip:SetPoint("TOPLEFT", panel, "TOPRIGHT", 0, 0)
+  if tooltipSide() == "left" then GameTooltip:SetPoint("TOPRIGHT", panel, "TOPLEFT", 0, 0)
+  else GameTooltip:SetPoint("TOPLEFT", panel, "TOPRIGHT", 0, 0) end
   local drawn = GameTooltip.SetItemByID and pcall(GameTooltip.SetItemByID, GameTooltip, piece.id)
   if not drawn then drawn = pcall(GameTooltip.SetHyperlink, GameTooltip, row.link or ("item:" .. piece.id)) end
   if not drawn then GameTooltip:SetText((itemLink(piece.id))) end
