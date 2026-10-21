@@ -12,6 +12,14 @@ Legacy plans (forever-armoury #1567, from #1566):
 - **`/fa legacy`** opens the Legacy window on its trees with the panel beside it, **`/fa legacy on|off`** and a switch on the settings page turn the part on and off.
 - Behind it: `LegacyCode.lua`, `Legacy.lua` and `LegacyUI.lua`; `BuildCode.lua` shares its name helpers, `Talents.lua` its guard for trait functions the client may lack (`FA.Talents.Game`), and `TalentUI.lua` its glow (`FA.LightButtons`).
 
+Click to take a talent (forever-armoury #1564):
+
+- **Click the next icon in the strip** and it takes that point: one rank, staged and committed together, as Apply does for a plan of one point (`C_Traits.PurchaseRank`, then `C_ClassTalents.CommitConfig`). It's all or none: a refused purchase or a failed commit, at once or later, rolls back and chat says why, in Apply's words. There is no confirm for one point; the tooltip already names it. Chat says what was taken (`Spent as Arms says: Deflection.`).
+- **Shift-click the next icon** is Apply for every point due, through the same confirm.
+- **Only the next icon, and only when Apply could spend**: a point to spend, out of combat, none of the window's own changes waiting, the build not off its order. Otherwise the click does nothing and the tooltip's last line says why, with Apply's reasons. When it would work the icon highlights under the mouse and the tooltip ends with **Click to take it** (and **Shift-click to take all N** when more than one is due).
+- **While the commit casts, a second click does nothing**, and the tooltip says the point is being applied; the strip moves on when the game answers.
+- Behind it: `FA.Apply` and `FA.PlanApply` take an optional number of points, and `FA.Talents.Applying()` says whether the addon's commit is casting.
+
 The Talented rank in the build code (forever-armoury #1540):
 
 - **`FAT3-` codes**: each build ends with its rank of the Legacy perk Talented, one digit 0 to 5 (`FAT3-70170-warrior-Arms%20PvP-0a0a0a0b0b0b1c1c-3`), as the site now writes them. `FAT1-` and `FAT2-` codes still read, with rank 0. A rank that isn't 0 to 5 is refused with a sentence, as the site does.

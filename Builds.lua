@@ -185,9 +185,10 @@ function FA.StripPlan(p, past, coming)
   return out, math.max(0, #p.left - 1 - coming)
 end
 
---[[ What Apply would spend now: the build's points not taken, in order, as many as the character has unspent.
-     Answers the list of talents and the progress, or nil and why. ]]
-function FA.PlanApply(build)
+--[[ What Apply would spend now: the build's points not taken, in order, as many as the character has unspent (and no
+     more than limit, when one is given: the strip's click takes one). Answers the list of talents and the progress, or
+     nil and why. ]]
+function FA.PlanApply(build, limit)
   if FA.Talents.HasStaged() then return nil, FA.Talents.STAGED end
   local p, why = FA.Progress(build)
   if not p then return nil, why end
@@ -199,7 +200,7 @@ function FA.PlanApply(build)
     return nil, p.next.level > (UnitLevel("player") or 1) and ("Your next point comes at level " .. p.next.level .. ".") or "You have no points to spend."
   end
   local list = {}
-  for i = 1, math.min(unspent, #p.left) do list[i] = p.left[i].talent end
+  for i = 1, math.min(unspent, #p.left, limit or math.huge) do list[i] = p.left[i].talent end
   return list, nil, p
 end
 
@@ -219,12 +220,13 @@ function FA.Summary(list, limit)
   return table.concat(parts, ", ")
 end
 
---[[ Spends the points PlanApply chose, all or none. Answers true and what was spent, or false and why. ]]
-function FA.Apply(build)
+--[[ Spends the points PlanApply chose (the first `limit` of them, when one is given), all or none. Answers true and what
+     was spent, or false and why. ]]
+function FA.Apply(build, limit)
   local ok, why = FA.Talents.CanChange()
   if not ok then return false, why end
   local list
-  list, why = FA.PlanApply(build)
+  list, why = FA.PlanApply(build, limit)
   if not list then return false, why end
   ok, why = FA.Talents.Learn(list)
   if not ok then return false, why end

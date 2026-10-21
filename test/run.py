@@ -110,6 +110,8 @@ C_SpecializationInfo = {
 }
 function GetNumSpecGroups() return SPEC.groups end
 function InCombatLockdown() return COMBAT end
+SHIFT = false   -- the shift key, for IsShiftKeyDown
+function IsShiftKeyDown() return SHIFT end
 C_Traits = {
   GetConfigInfo = function(configID) return { ID = configID, treeIDs = { 55 }, name = "Primary" } end,
   GetConfigIDByTreeID = function(treeID) if treeID == 1188 and TALENTED then return 99 end return nil end,
@@ -275,7 +277,7 @@ function RESET(api)
   ForeverArmouryDB, ForeverArmouryCharDB = nil, nil; FA.Init(); FA.Talents.Forget(); PLAYER.level = 60
   for _, tab in ipairs(TREE) do for _, t in ipairs(tab) do t[4] = 0 end end
   NODES_FROM()
-  STAGED, OTHER, LOG, PRINTED = {}, {}, {}, ""
+  STAGED, OTHER, LOG, PRINTED, SHIFT = {}, {}, {}, "", false
   SPEC.active, SPEC.groups, COMBAT, FAIL_COMMIT, NO_ACTIVE, NO_CHANGE, TALENTED, BONUS = 1, 1, false, false, false, false, 0, 0
   REGISTERED, BAD_EVENTS = {}, {}
   FACTION, EQUIPPED, BAGS, ITEMS = "Alliance", {}, {}, {}
@@ -2445,6 +2447,173 @@ class UI(unittest.TestCase):
         L.run("FA.SetPart('plan', false)")
         self.assertEqual(self.overlays(2, 2), "hover=false")
         L.run("FA.SetPart('plan', true)")
+
+    # ---- a click on the strip's next icon takes its point (#1564)
+    def ready(self, level, ranks=()):
+        """follow, with chat and the log emptied of the import."""
+        self.follow(level, ranks)
+        L.run("EVENT('TRAIT_CONFIG_UPDATED', 7); PRINTED = ''; LOG = {}")   # and an earlier test's commit is over
+
+    def said(self):
+        return L.eval("PRINTED").replace("|cffffd100Forever Armoury:|r ", "").strip()
+
+    def click(self, i, shift=False):
+        L.run("SHIFT = %s; local ic = ForeverArmouryTalentStrip.icons[%d]; ic.scripts.OnClick(ic, 'LeftButton'); SHIFT = false" % ("true" if shift else "false", i))
+
+    def highlighted(self, i):
+        """Whether the icon's highlight would show under the mouse (its alpha is 1)."""
+        return L.eval("ForeverArmouryTalentStrip.icons[%d].highlight.alpha" % i) == 1
+
+    def trace(self):
+        return list(L.eval("LOG").values())
+
+    def tip(self, i):
+        self.hover(i)
+        return list(L.eval("TIP.lines").values())
+
+    def nothing_happened(self):
+        self.assertEqual(self.trace(), [])
+        self.assertEqual(L.eval("#POPUPS"), 0)
+        self.assertEqual(self.said(), "")
+
+    def test_a_click_takes_the_next_point_and_commits_it(self):
+        self.ready(12)   # three points to spend, all Deflection
+        i = self.icon("next", "Deflection", "1/5")
+        self.assertTrue(self.highlighted(i))
+        self.assertEqual(self.tip(i)[-2:], ["Click to take it", "Shift-click to take all 3"])
+        self.click(i)
+        self.assertEqual(self.trace(), ["buy Deflection", "commit"])   # one rank, not the three Apply would
+        self.assertEqual(L.eval("FA.Talents.Spent()"), 1)
+        self.assertEqual(L.eval("TREE[1][1][4]"), 1)
+        self.assertEqual(L.eval("#POPUPS"), 0)   # no confirm for one point
+        self.assertEqual(self.said(), "Spent as Arms says: Deflection.")
+        # the strip has moved on, through the refresh
+        self.assertEqual(self.strip()[:2], ["taken Deflection 1/5|v a=0.45", "next Deflection 2/5|[Now] edge"])
+        self.assertTrue(self.highlighted(self.icon("next", "Deflection", "2/5")))
+
+    def test_the_tooltip_offers_only_a_click_for_a_last_point(self):
+        self.ready(10)   # one point to spend
+        self.assertEqual(self.tip(self.icon("next", "Deflection", "1/5"))[-1], "Click to take it")
+
+    def test_only_the_next_icon_takes_a_click(self):
+        self.ready(18, self.MID)   # two points to spend; Tactical Mastery 3/5 is next
+        for kind, name, rank in (("taken", "Deflection", "5/5"), ("coming", "Tactical Mastery", "4/5")):
+            i = self.icon(kind, name, rank)
+            self.assertEqual(self.tip(i)[-1], {"taken": "Taken", "coming": "Level 18 \u00b7 Rank 4 of 5"}[kind])
+            self.assertFalse(self.highlighted(i))
+            self.click(i)
+            self.click(i, shift=True)
+        self.nothing_happened()
+        self.assertTrue(self.highlighted(self.icon("next", "Tactical Mastery", "3/5")))
+
+    def test_a_click_without_a_point_does_nothing_and_the_tooltip_says_why(self):
+        self.ready(9)   # no point until level 10
+        i = self.icon("next", "Deflection", "1/5")
+        self.assertFalse(self.highlighted(i))
+        self.assertEqual(self.tip(i)[-1], "Your next point comes at level 10.")
+        self.click(i)
+        self.click(i, shift=True)
+        self.nothing_happened()
+
+    def test_a_click_in_combat_does_nothing(self):
+        self.ready(12)
+        L.run("COMBAT = true; FA.Refresh()")
+        i = self.icon("next", "Deflection", "1/5")
+        self.assertFalse(self.highlighted(i))
+        self.assertEqual(self.tip(i)[-1], "You can't change talents in combat.")
+        self.click(i)
+        self.click(i, shift=True)
+        self.nothing_happened()
+        L.run("COMBAT = false; FA.Refresh()")   # the fight ends: the icon works again
+        self.assertTrue(self.highlighted(i))
+        self.click(i)
+        self.assertEqual(L.eval("FA.Talents.Spent()"), 1)
+
+    def test_a_click_leaves_the_windows_own_changes_alone(self):
+        self.ready(12)
+        L.run("STAGED[NODE(2, 2)] = 1; FA.Talents.Forget(); FA.Refresh()")   # a point bought in the window, not applied
+        i = self.icon("next", "Deflection", "1/5")
+        self.assertFalse(self.highlighted(i))
+        self.assertEqual(self.tip(i)[-1], L.eval("FA.Talents.STAGED"))
+        self.click(i)
+        self.click(i, shift=True)
+        self.assertEqual(self.trace(), [])
+        self.assertEqual((L.eval("#POPUPS"), self.said()), (0, ""))
+        self.assertTrue(L.eval("STAGED[NODE(2, 2)] == 1"))   # still there
+
+    def test_a_click_on_a_build_off_its_order_does_nothing(self):
+        self.ready(60, ((1, 1, 2), (3, 4, 1)))   # Last Stand, which the build doesn't have
+        i = self.icon("next", "Deflection", "3/5")
+        self.assertFalse(self.highlighted(i))
+        self.assertEqual(self.tip(i)[-1], "You have 1 point this build doesn't, so Apply can't follow it.")
+        self.click(i)
+        self.click(i, shift=True)
+        self.assertEqual(self.trace(), [])
+        self.assertEqual((L.eval("#POPUPS"), self.said()), (0, ""))
+        self.assertEqual(L.eval("FA.Talents.Spent()"), 3)
+
+    def test_shift_click_asks_to_spend_every_point_due(self):
+        self.ready(12)
+        self.click(self.icon("next", "Deflection", "1/5"), shift=True)
+        self.assertEqual(L.eval("#POPUPS"), 1)
+        self.assertEqual(L.eval("POPUPS[1].which"), "FOREVERARMOURY_APPLY")
+        self.assertIn("Spend 3 points as Arms says?", L.eval("POPUPS[1].text"))
+        self.assertIn("Deflection x3", L.eval("POPUPS[1].text"))
+        self.assertEqual(self.trace(), [])   # nothing until the confirm
+        L.run("StaticPopupDialogs.FOREVERARMOURY_APPLY.OnAccept(nil, POPUPS[1].data)")
+        self.assertEqual(L.eval("FA.Talents.Spent()"), 3)
+        self.assertEqual(self.trace(), ["buy Deflection", "buy Deflection", "buy Deflection", "commit"])
+        self.assertEqual(self.said(), "Spent as Arms says: Deflection x3.")
+
+    def test_a_point_the_game_refuses_is_rolled_back_and_said(self):
+        L.run("FA.ImportText('FAT1-warrior-Arms-0b'); PLAYER.level = 12; FA.Talents.Forget(); FA.Refresh(); PRINTED = ''")   # Sweeping Strikes first: gated behind five points in Arms
+        i = 1   # the first icon: nothing is taken
+        self.click(i)
+        self.assertEqual(self.trace(), ["refused Sweeping Strikes", "rollback"])
+        self.assertEqual(self.said(), "The game wouldn't take point 1 (Sweeping Strikes). Nothing was spent.")
+        self.assertEqual(L.eval("FA.Talents.Spent()"), 0)
+        self.assertFalse(L.eval("next(STAGED) ~= nil"))
+
+    def test_a_failed_commit_is_rolled_back_and_said(self):
+        self.ready(12)
+        L.run("FAIL_COMMIT = true")
+        self.click(self.icon("next", "Deflection", "1/5"))
+        self.assertEqual(self.trace(), ["buy Deflection", "commit", "rollback"])
+        self.assertEqual(self.said(), "The game wouldn't apply the talents. Nothing was spent.")
+        self.assertEqual(L.eval("FA.Talents.Spent()"), 0)
+
+    def test_a_click_while_the_commit_casts_is_ignored(self):
+        self.ready(12)
+        L.run("FAIL_COMMIT = 'late'")   # the cast starts and has not answered
+        i = self.icon("next", "Deflection", "1/5")
+        self.click(i)
+        self.assertEqual(self.trace(), ["buy Deflection", "commit"])
+        i = self.icon("next", "Deflection", "2/5")   # the staged rank counts as taken
+        self.assertTrue(L.eval("FA.Talents.Applying()"))
+        self.assertFalse(self.highlighted(i))
+        self.assertEqual(self.tip(i)[-1], "That point is being applied.")
+        L.run("PRINTED = ''")
+        self.click(i)
+        self.click(i, shift=True)
+        self.assertEqual(self.trace(), ["buy Deflection", "commit"])   # no second purchase, no confirm
+        self.assertEqual((L.eval("#POPUPS"), self.said()), (0, ""))
+        # the game fails the cast: rolled back, and the icon is a button again
+        L.run("EVENT('CONFIG_COMMIT_FAILED', 7); FLUSH()")
+        self.assertEqual(self.trace()[-1], "rollback")
+        self.assertFalse(L.eval("FA.Talents.Applying()"))
+        i = self.icon("next", "Deflection", "1/5")   # the rank is no longer staged
+        self.assertTrue(self.highlighted(i))
+        L.run("FAIL_COMMIT = false")
+        self.click(i)
+        self.assertEqual(L.eval("FA.Talents.Spent()"), 1)
+
+    def test_a_commit_that_went_through_frees_the_icon(self):
+        self.ready(12)
+        self.click(self.icon("next", "Deflection", "1/5"))
+        L.run("EVENT('TRAIT_CONFIG_UPDATED', 7); FLUSH()")
+        self.assertFalse(L.eval("FA.Talents.Applying()"))
+        self.click(self.icon("next", "Deflection", "2/5"))
+        self.assertEqual(L.eval("FA.Talents.Spent()"), 2)
 
     # ---- the panel's build list as a section
     def header(self):
