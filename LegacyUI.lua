@@ -19,7 +19,7 @@ local PLAN_ROWS, PERK_ROWS = 5, 12   -- plans shown at once (the list scrolls pa
 local PLAN_Y, PERK_H = 160, 16
 local HEADER_Y = 140   -- the plans section's header row, above its list
 local PLUS, MINUS = "Interface\\Buttons\\UI-PlusButton-Up", "Interface\\Buttons\\UI-MinusButton-Up"
-local TABS_BOTTOM = 270   -- how far below the Legacy window's top its side tabs end, when the game won't say
+local TABS_BOTTOM = 284   -- how far below the Legacy window's top its side tabs end, when the game won't say (measured in the beta)
 local GREEN, GOLD, GREY, RED = "|cff40ff40", "|cffffd100", "|cff909090", "|cffff6060"
 local panel, strip, window, hooked
 local panelBy         -- what the panel is anchored to: the strip, or the window when there is no strip
@@ -135,14 +135,23 @@ end
 
 --[[ Where the window's side tabs end (the reward track, the challenges and the trees hang off its right edge from
      y = -60 down, the trees tab lowest): below the lowest tab's bottom, read from the game when the window is laid out,
-     else about 270. The strip and the panel hang under them, so the tabs stay clickable. ]]
-local function tabsEnd()
+     else 284, as measured in the beta. The strip and the panel hang under them, so the tabs stay clickable. The read is guarded: a
+     client whose window or tab answers oddly (a value the addon can't compare, a method that isn't there) gets the
+     fallback and a line in chat, never a panel that isn't made. ]]
+local function readTabsEnd()
   local tab = window ~= UIParent and window.LegacyTreeTab
-  local top = window.GetTop and tonumber(window:GetTop())
-  local bottom = type(tab) == "table" and tab.GetBottom and tonumber(tab:GetBottom())
-  if top and bottom and top > bottom then return math.floor(top - bottom) + 4 end
-  return TABS_BOTTOM
+  local top = window.GetTop and window:GetTop()
+  local bottom = type(tab) == "table" and tab.GetBottom and tab:GetBottom()
+  if type(top) == "number" and type(bottom) == "number" and top > bottom then return math.floor(top - bottom) + 4 end
+  return nil
 end
+
+local function tabsEnd()
+  local ok, found = pcall(readTabsEnd)
+  if not ok then FA.Print("Couldn't read where the Legacy window's tabs end (" .. tostring(found) .. "); the panel starts " .. TABS_BOTTOM .. " down.") end
+  return ok and found or TABS_BOTTOM
+end
+FA.LegacyTabsEnd = tabsEnd   -- for the tests
 
 --[[ The strip for the followed plan and where the account is on it (Progress's answer, nil without a plan that can be
      followed), with whether a Legacy point can be spent now: one is available and the cap isn't reached. ]]
