@@ -3912,11 +3912,22 @@ class UI(unittest.TestCase):
         self.compare("900", "600")
         self.assertEqual(self.compare_points("ShoppingTooltip1"), "TOPLEFT GameTooltip BOTTOMLEFT -26")
         self.assertEqual(self.compare_points("ShoppingTooltip2"), "TOPLEFT ShoppingTooltip1 BOTTOMLEFT -26")
-        # a header that is hidden takes no room either
+        # a header that is hidden gets the same 22 + 4, not its own height
         L.run("for _, t in ipairs({ ShoppingTooltip1, ShoppingTooltip2 }) do rawset(t, 'CompareHeader', t.saved); t.CompareHeader:Hide() end")
         self.addCleanup(L.run, "for _, t in ipairs({ ShoppingTooltip1, ShoppingTooltip2 }) do t.CompareHeader:Show() end")
         self.compare("900", "600")
         self.assertEqual(self.compare_points("ShoppingTooltip1"), "TOPLEFT GameTooltip BOTTOMLEFT -26")
+        self.assertEqual(self.compare_points("ShoppingTooltip2"), "TOPLEFT ShoppingTooltip1 BOTTOMLEFT -26")
+
+    def test_a_header_that_cannot_give_a_height_gets_the_22_and_a_gap(self):
+        self.route_at()
+        self.gear_hover(self.piece_row("Ironforge Greathammer"))
+        for answer in ("0", "-5", "nil"):
+            L.run("for _, t in ipairs({ ShoppingTooltip1, ShoppingTooltip2 }) do t.CompareHeader.GetHeight = function() return %s end end" % answer)
+            self.addCleanup(L.run, "for _, t in ipairs({ ShoppingTooltip1, ShoppingTooltip2 }) do t.CompareHeader.GetHeight = function() return 24 end end")
+            self.compare("900", "600")
+            self.assertEqual(self.compare_points("ShoppingTooltip1"), "TOPLEFT GameTooltip BOTTOMLEFT -26", answer)
+            self.assertEqual(self.compare_points("ShoppingTooltip2"), "TOPLEFT ShoppingTooltip1 BOTTOMLEFT -26", answer)
 
     def test_only_the_second_over_the_panel_goes_under_the_tooltip_when_the_first_is_hidden(self):
         self.route_at()

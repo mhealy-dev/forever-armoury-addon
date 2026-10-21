@@ -58,7 +58,7 @@ local function headerHeight(tip)
     local header = tip.CompareHeader
     if type(header) == "table" and header:IsShown() then return header:GetHeight() end
   end)
-  return ok and type(height) == "number" and height or HEADER_HEIGHT
+  return ok and type(height) == "number" and height > 0 and height or HEADER_HEIGHT
 end
 
 local function stackComparison()
