@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.1 (unreleased)
+
+Read every talent node, and keep going when a pick doesn't place (forever-armoury #1590):
+
+- **A node's tree is whichever of its `groupIDs` is one of the trees' groups.** The first beta try (client 1.60.1.70450) showed why the addon read 3 of Arms's talents, 1 of Fury's and 2 of Protection's: each node has 3 to 7 `groupIDs`, and the talent tree's group is not always the first, which was the only one the addon looked at. A node whose groups don't name a tree, or name two, goes to the tree its `posX` falls in or is nearest to, by the x range of the nodes that do have a group (the trees sit thousands apart, the columns 600); with no group on any node, the x values are split into one run per tree at the widest gaps.
+- **No node is dropped for its rank count.** `maxRanks` when above 0, else `totalMaxRanks`, else its first entry's `maxRanks`; a node none of them counts is kept with its rank count unknown, drawn as `?` (`Rank 1 of ?`, `1/?`). A node is left unread only when `isVisible` is false, as the talent window skips it too, or it has no position, and `/fa debug` lists it with why.
+- **`/fa debug nodes`** prints every node of the active config as the game gives it, a line each: id, `posX`, `posY`, `maxRanks`, `totalMaxRanks`, how many `groupIDs` and `entryIDs`, `isVisible`, `type`, `subTreeID`, and the tree the addon gave it and why. `/fa debug` is as it was, and says how many of a tree's nodes went by position.
+- **A pick that doesn't place is marked, not fatal.** A build with a pick no talent of your trees sits under (the site newer than the addon, or a node that did not sort) used to stop at "A talent in this build isn't in your talent trees" with no next talent, no strip and Apply off. Now `FA.Progress` places what it can and lists the rest (`unplaced`, each with its tree and cell). The panel says "N talents of this build aren't in your trees" with their cells (three named, then "and N more") and carries on: the next placeable talent is lit; the strip shows each such pick, in its place in the order, as a greyed question-mark icon whose tooltip names the cell; Apply spends the placeable points in order and stops at the first unplaceable one, saying so in its button tooltip, in the confirm and in chat. Chat says the same when the build is imported, once per build.
+
 ## 0.5.0 (unreleased)
 
 Legacy plans (forever-armoury #1567, from #1566):

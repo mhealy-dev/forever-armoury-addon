@@ -142,6 +142,7 @@ local HELP = {
   "/fa legacy on|off  the Legacy plans part",
   "/fa options  the addon's settings",
   "/fa debug  every talent by tree, row and column, as the addon reads them from the game's positions",
+  "/fa debug nodes  every node of your talent trees as the game gives it, and the tree the addon put it in",
 }
 SLASH_FOREVERARMOURY1 = "/fa"
 SLASH_FOREVERARMOURY2 = "/armoury"
@@ -181,6 +182,8 @@ SlashCmdList.FOREVERARMOURY = function(msg)
     elseif FA.ToggleLegacy then FA.ToggleLegacy() end
   elseif cmd == "options" or cmd == "settings" then
     if FA.OpenOptions then FA.OpenOptions() end
+  elseif cmd == "debug" and rest:lower() == "nodes" then
+    for _, line in ipairs(FA.Talents.DumpNodes()) do FA.Print(line) end
   elseif cmd == "debug" then
     FA.Talents.Forget()
     for _, line in ipairs(FA.Talents.Dump()) do FA.Print(line) end
