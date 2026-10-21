@@ -38,13 +38,27 @@ local hovered
      tooltip instead. The game places them in TooltipComparisonManager:AnchorShoppingTooltips, which shows them and then sets
      their points, each time it builds or rebuilds the comparison (a rebuild, when an item's data arrives, shows nothing
      anew), so this runs after that call, and once more after our Show() in case the position wasn't there yet. A client
-     that won't give a position, or errors on it, keeps the game's placement. ]]
+     that won't give a position, or errors on it, keeps the game's placement.
+     Each comparison tooltip carries a CompareHeader ("Equipped", "If equipped together"), a frame that hangs above the
+     tooltip's top edge (22 tall in the game's template, anchored to the tooltip's top left). Stacked flush under the one
+     above, the tooltip would sit right over the header and cut the label off, so each hangs the header's height plus a
+     small gap below the one above it. ]]
 local function overPanel(tip)
   local ok, covers = pcall(function()
     local left, edge = tip:GetLeft(), panel:GetRight()
     return type(left) == "number" and type(edge) == "number" and left < edge - 1
   end)
   return ok and covers
+end
+
+local HEADER_HEIGHT, HEADER_GAP = 22, 4   -- the game's CompareHeader height, when the frame can't say; the space under what's above
+
+local function headerHeight(tip)
+  local ok, height = pcall(function()
+    local header = tip.CompareHeader
+    if type(header) == "table" and header:IsShown() then return header:GetHeight() end
+  end)
+  return ok and type(height) == "number" and height or HEADER_HEIGHT
 end
 
 local function stackComparison()
@@ -57,11 +71,11 @@ local function stackComparison()
     end
   end
   if not over then return end
-  local above, gap = GameTooltip, -4
+  local above = GameTooltip
   for _, tip in ipairs(shown) do
     tip:ClearAllPoints()
-    tip:SetPoint("TOPLEFT", above, "BOTTOMLEFT", 0, gap)
-    above, gap = tip, 0
+    tip:SetPoint("TOPLEFT", above, "BOTTOMLEFT", 0, -(headerHeight(tip) + HEADER_GAP))
+    above = tip
   end
 end
 

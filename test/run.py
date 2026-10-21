@@ -1921,6 +1921,11 @@ GameTooltip.IsOwned = function(_, frame) return TIP.owner == frame end
 -- tooltips it is given and then sets their points (left of the tooltip when SIDE is "left", else right of it), after
 -- Initialize cleared them; COMPARE(first, second) is the game building or rebuilding the comparison for GameTooltip
 ShoppingTooltip1, ShoppingTooltip2 = frame("ShoppingTooltip1"), frame("ShoppingTooltip2")
+-- each carries the CompareHeader ("Equipped") the game's template hangs above its top edge, here 24 tall
+for _, tip in ipairs({ ShoppingTooltip1, ShoppingTooltip2 }) do
+  tip.CompareHeader = frame()
+  tip.CompareHeader.GetHeight = function() return 24 end
+end
 SIDE = "left"
 TooltipComparisonManager = {}
 function TooltipComparisonManager:AnchorShoppingTooltips(first, second)
@@ -3876,15 +3881,42 @@ class UI(unittest.TestCase):
         self.route_at()
         self.gear_hover(self.piece_row("Ironforge Greathammer"))
         self.compare("900")
-        self.assertEqual(self.compare_points("ShoppingTooltip1"), "TOPLEFT GameTooltip BOTTOMLEFT -4")
+        self.assertEqual(self.compare_points("ShoppingTooltip1"), "TOPLEFT GameTooltip BOTTOMLEFT -28")
         # a second piece goes under the first
         self.compare("900", "600")
-        self.assertEqual(self.compare_points("ShoppingTooltip1"), "TOPLEFT GameTooltip BOTTOMLEFT -4")
-        self.assertEqual(self.compare_points("ShoppingTooltip2"), "TOPLEFT ShoppingTooltip1 BOTTOMLEFT 0")
+        self.assertEqual(self.compare_points("ShoppingTooltip1"), "TOPLEFT GameTooltip BOTTOMLEFT -28")
+        self.assertEqual(self.compare_points("ShoppingTooltip2"), "TOPLEFT ShoppingTooltip1 BOTTOMLEFT -28")
         # a rebuild (the game placed it again, the tooltips already shown) is stacked again
         self.compare("900", "600")
-        self.assertEqual(self.compare_points("ShoppingTooltip1"), "TOPLEFT GameTooltip BOTTOMLEFT -4")
-        self.assertEqual(self.compare_points("ShoppingTooltip2"), "TOPLEFT ShoppingTooltip1 BOTTOMLEFT 0")
+        self.assertEqual(self.compare_points("ShoppingTooltip1"), "TOPLEFT GameTooltip BOTTOMLEFT -28")
+        self.assertEqual(self.compare_points("ShoppingTooltip2"), "TOPLEFT ShoppingTooltip1 BOTTOMLEFT -28")
+
+    def test_the_stacked_comparisons_leave_room_for_their_headers(self):
+        self.route_at()
+        self.gear_hover(self.piece_row("Ironforge Greathammer"))
+        # the header is 24 tall: a tooltip hangs 24 + 4 under the one above it, so the "Equipped" label above it is clear
+        self.compare("900")
+        self.assertEqual(self.compare_points("ShoppingTooltip1"), "TOPLEFT GameTooltip BOTTOMLEFT -28")
+        # each one's own header: the second's is taller
+        L.run("ShoppingTooltip2.CompareHeader.GetHeight = function() return 30 end")
+        self.addCleanup(L.run, "ShoppingTooltip2.CompareHeader.GetHeight = function() return 24 end")
+        self.compare("900", "600")
+        self.assertEqual(self.compare_points("ShoppingTooltip1"), "TOPLEFT GameTooltip BOTTOMLEFT -28")
+        self.assertEqual(self.compare_points("ShoppingTooltip2"), "TOPLEFT ShoppingTooltip1 BOTTOMLEFT -34")
+
+    def test_a_comparison_without_a_header_gets_the_games_22_and_a_gap(self):
+        self.route_at()
+        self.gear_hover(self.piece_row("Ironforge Greathammer"))
+        L.run("for _, t in ipairs({ ShoppingTooltip1, ShoppingTooltip2 }) do rawset(t, 'saved', t.CompareHeader); rawset(t, 'CompareHeader', false) end")
+        self.addCleanup(L.run, "for _, t in ipairs({ ShoppingTooltip1, ShoppingTooltip2 }) do rawset(t, 'CompareHeader', t.saved) end")
+        self.compare("900", "600")
+        self.assertEqual(self.compare_points("ShoppingTooltip1"), "TOPLEFT GameTooltip BOTTOMLEFT -26")
+        self.assertEqual(self.compare_points("ShoppingTooltip2"), "TOPLEFT ShoppingTooltip1 BOTTOMLEFT -26")
+        # a header that is hidden takes no room either
+        L.run("for _, t in ipairs({ ShoppingTooltip1, ShoppingTooltip2 }) do rawset(t, 'CompareHeader', t.saved); t.CompareHeader:Hide() end")
+        self.addCleanup(L.run, "for _, t in ipairs({ ShoppingTooltip1, ShoppingTooltip2 }) do t.CompareHeader:Show() end")
+        self.compare("900", "600")
+        self.assertEqual(self.compare_points("ShoppingTooltip1"), "TOPLEFT GameTooltip BOTTOMLEFT -26")
 
     def test_only_the_second_over_the_panel_goes_under_the_tooltip_when_the_first_is_hidden(self):
         self.route_at()
@@ -3892,7 +3924,7 @@ class UI(unittest.TestCase):
         L.run("ShoppingTooltip2.GetLeft = function() return 600 end; ShoppingTooltip1.GetLeft = function() return 900 end; "
               "ForeverArmouryGearPanel.GetRight = function() return 1200 end; COMPARE(false, true)")
         self.assertEqual(self.compare_points("ShoppingTooltip1"), self.GAMES)   # hidden: not touched
-        self.assertEqual(self.compare_points("ShoppingTooltip2"), "TOPLEFT GameTooltip BOTTOMLEFT -4")
+        self.assertEqual(self.compare_points("ShoppingTooltip2"), "TOPLEFT GameTooltip BOTTOMLEFT -28")
 
     def test_a_comparison_right_of_the_panel_is_left_alone(self):
         self.route_at()
@@ -3944,7 +3976,7 @@ class UI(unittest.TestCase):
                  end
                  GameTooltip.Show = function() TIP.shown = true; ShoppingTooltip1.GetLeft = function() return 900 end end""")
         self.gear_hover(self.piece_row("Ironforge Greathammer"))
-        self.assertEqual(self.compare_points("ShoppingTooltip1"), "TOPLEFT GameTooltip BOTTOMLEFT -4")
+        self.assertEqual(self.compare_points("ShoppingTooltip1"), "TOPLEFT GameTooltip BOTTOMLEFT -28")
 
     def test_the_comparison_is_hooked_once_on_the_games_manager(self):
         self.route_at()
