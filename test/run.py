@@ -4062,9 +4062,10 @@ class UI(unittest.TestCase):
         self.assertEqual(L.eval("ForeverArmouryLegacyStrip.points[1][3]"), "BOTTOMLEFT")
         self.assertEqual(L.eval("ForeverArmouryLegacyStrip.points[1][4]"), -2)
         self.assertEqual(L.eval("ForeverArmouryLegacyStrip.points[1][5]"), -4)
-        # as tall as the panel, not the window's remaining height under the tabs
-        self.assertEqual(L.eval("#ForeverArmouryLegacyStrip.points"), 1)
-        self.assertEqual(L.eval("ForeverArmouryLegacyStrip.height"), 460)
+        # and down to the window's bottom, not past it
+        self.assertEqual(L.eval("#ForeverArmouryLegacyStrip.points"), 2)
+        self.assertTrue(L.eval("ForeverArmouryLegacyStrip.points[2][2] == LegacySystemFrame"))
+        self.assertEqual(L.eval("ForeverArmouryLegacyStrip.points[2][3]"), "BOTTOMRIGHT")
         self.assertTrue(L.eval("ForeverArmouryLegacyPanel.points[1][2] == ForeverArmouryLegacyStrip"))
         self.assertEqual(L.eval("ForeverArmouryLegacyPanel.points[1][5]"), 0)   # level with the strip's top
         self.assertEqual(L.eval("#ForeverArmouryLegacyPanel.points"), 1)   # moved, not added to
