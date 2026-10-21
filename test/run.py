@@ -3891,6 +3891,41 @@ class UI(unittest.TestCase):
         L.run("MADE = FA.WindowButton('nowhere', CharacterFrame)")
         self.assertIsNone(L.eval("MADE"))   # not a part
 
+    def hooked_with(self, before):
+        """The three windows hooked in a runtime of their own, `before` (Lua) having run first; the window hooks it installs are run as the game would."""
+        other = Lua()
+        other.run("RESET('traits')")
+        other.run(UI_STUB)
+        for name in ("Strip.lua", "TalentUI.lua", "GearUI.lua", "LegacyUI.lua"):
+            other.run("""
+              local f = assert(io.open(ROOT .. '/%s', 'rb')); local src = f:read('*a'); f:close()
+              assert((loadstring or load)(src, '@%s'))('ForeverArmoury', FA)
+            """ % (name, name))
+        other.run(before)
+        other.run("FA.HookTalentFrame(); FA.HookCharacterFrame(); FA.HookLegacyFrame(); for _, fn in ipairs(HOOKS) do pcall(fn) end")
+        return other
+
+    def check_panels_without_buttons(self, other):
+        self.assertTrue(other.eval("ForeverArmouryTalentPanel.shown and ForeverArmouryGearPanel.shown and ForeverArmouryLegacyPanel.shown"))
+        other.run("CharacterFrame.shown = false; for _, fn in ipairs(HOOKS) do pcall(fn) end")   # the window's OnHide hooks are installed too
+        self.assertFalse(other.eval("ForeverArmouryGearPanel.shown"))
+
+    def test_a_window_whose_name_cant_be_read_still_gets_its_panel_and_a_button(self):
+        other = self.hooked_with("for _, w in ipairs({ PlayerSpellsFrame, CharacterFrame, LegacySystemFrame }) do w.GetName = function() error('no name') end end")
+        self.check_panels_without_buttons(other)
+        self.assertTrue(other.eval("ForeverArmouryGearButton ~= nil and ForeverArmouryGearButton.points[1][1] == 'TOPRIGHT'"))   # no name, no global: the corner
+
+    def test_a_window_whose_frame_level_cant_be_read_still_gets_its_panel_and_a_button(self):
+        other = self.hooked_with("for _, w in ipairs({ PlayerSpellsFrame, CharacterFrame, LegacySystemFrame }) do w.GetFrameLevel = function() error('no level') end end; "
+                                 "PlayerSpellsFrame.CloseButton.GetFrameLevel = function() error('no level') end; CharacterFrameCloseButton.GetFrameLevel = function() error('no level') end")
+        self.check_panels_without_buttons(other)
+        self.assertTrue(other.eval("ForeverArmouryPlanButton ~= nil and ForeverArmouryLegacyButton ~= nil"))
+
+    def test_a_button_the_client_cant_make_leaves_the_panels_alone(self):
+        other = self.hooked_with("local make = CreateFrame; CreateFrame = function(kind, name, ...) if kind == 'Button' and name and name:find('Window') == nil and name:find('Button$') then error('no button') end return make(kind, name, ...) end")
+        self.assertTrue(other.eval("ForeverArmouryPlanButton == nil and ForeverArmouryGearButton == nil and ForeverArmouryLegacyButton == nil"))
+        self.check_panels_without_buttons(other)
+
     # ---- the gear panel
     def gear(self):
         return L.eval("function() local p = ForeverArmouryGearPanel; local rows = {} for i, r in ipairs(p.rows) do if r.shown then rows[i] = (r.slot.text or '') .. ' ' .. (r.item.text or '') .. ' ' .. (r.state.text or '') .. ' | ' .. (r.from.text or '') end end "

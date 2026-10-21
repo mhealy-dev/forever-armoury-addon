@@ -172,7 +172,8 @@ local function partOf(key) for _, part in ipairs(FA.PARTS) do if part.key == key
 --[[ The window's own close button, as the frame names it (Blizzard's frame templates name it CloseButton or
      ClosePanelButton), else the global the older frames are known by (CharacterFrameCloseButton); nil when there is none. ]]
 local function closeButtonOf(window)
-  local name = window.GetName and window:GetName()
+  local named, name = pcall(function() return window:GetName() end)   -- a read the client refuses is no name
+  if not named then name = nil end
   for _, found in ipairs({ window.CloseButton or false, window.ClosePanelButton or false,
     type(name) == "string" and _G[name .. "CloseButton"] or false, type(name) == "string" and _G[name .. "ClosePanelButton"] or false }) do
     if type(found) == "table" and found.SetPoint then return found end
@@ -196,15 +197,14 @@ end
 
 --[[ The small square button at the top right of a game window, left of its close button, that puts the part's panel away
      and brings it back. One a part; made when the window is hooked. The addon ships no icon, so it carries "FA". ]]
-function FA.WindowButton(key, window)
-  if WINDOW_BUTTONS[key] then return WINDOW_BUTTONS[key] end
-  if not (window and partOf(key)) then return nil end
+local function makeWindowButton(key, window)
   local close = closeButtonOf(window)
   local button = CreateFrame("Button", "ForeverArmoury" .. key:sub(1, 1):upper() .. key:sub(2) .. "Button", window)
   button.key = key
   button:SetSize(BUTTON_SIZE, BUTTON_SIZE)
   if close then button:SetPoint("RIGHT", close, "LEFT", -BUTTON_GAP, 0) else button:SetPoint("TOPRIGHT", window, "TOPRIGHT", -34, -6) end
-  button:SetFrameLevel((close or window):GetFrameLevel() + (close and 0 or 10))
+  local ok, level = pcall(function() return (close or window):GetFrameLevel() end)
+  if ok and type(level) == "number" then button:SetFrameLevel(level + (close and 0 or 10)) end
   button:RegisterForClicks("LeftButtonUp")
   local back = button:CreateTexture(nil, "BACKGROUND")
   back:SetAllPoints()
@@ -226,6 +226,15 @@ function FA.WindowButton(key, window)
   WINDOW_BUTTONS[key] = button
   FA.SyncWindowButton(key)
   return button
+end
+
+--[[ The hooks that make the window's panel come after this, so a client that errors on any of it costs the button and
+     nothing else: the error is dropped and there is no button. ]]
+function FA.WindowButton(key, window)
+  if WINDOW_BUTTONS[key] then return WINDOW_BUTTONS[key] end
+  if not (window and partOf(key)) then return nil end
+  local ok, button = pcall(makeWindowButton, key, window)
+  return ok and button or nil
 end
 
 --[[ /fa: the panel, the import box, the switches. ]]
