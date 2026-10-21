@@ -1922,11 +1922,6 @@ GameTooltip.IsOwned = function(_, frame) return TIP.owner == frame end
 -- tooltips it is given and then sets their points (left of the tooltip when SIDE is "left", else right of it), after
 -- Initialize cleared them; COMPARE(first, second) is the game building or rebuilding the comparison for GameTooltip
 ShoppingTooltip1, ShoppingTooltip2 = frame("ShoppingTooltip1"), frame("ShoppingTooltip2")
--- each carries the CompareHeader ("Equipped") the game's template hangs above its top edge, here 24 tall
-for _, tip in ipairs({ ShoppingTooltip1, ShoppingTooltip2 }) do
-  tip.CompareHeader = frame()
-  tip.CompareHeader.GetHeight = function() return 24 end
-end
 SIDE = "left"
 TooltipComparisonManager = {}
 function TooltipComparisonManager:AnchorShoppingTooltips(first, second)
@@ -4131,6 +4126,20 @@ class UI(unittest.TestCase):
         self.compare("900", "600")
         self.assertEqual(self.tooltip_point(), "TOPLEFT ForeverArmouryGearPanel TOPRIGHT -200 0")
 
+    def test_a_repeated_hook_call_leaves_the_tooltips_anchor_set_once(self):
+        self.route_at()
+        self.gear_hover(self.piece_row("Ironforge Greathammer"))
+        self.widths(screen=1708)
+        L.run("SETS = 0; local set = GameTooltip.SetPoint; GameTooltip.SetPoint = function(...) SETS = SETS + 1; return set(...) end")
+        self.addCleanup(L.run, "GameTooltip.SetPoint = nil")
+        self.compare("900", "600")
+        self.assertEqual(L.eval("SETS"), 1)
+        # the same call again (the game's manager, then our Show): same offset, nothing set
+        self.compare("900", "600")
+        self.compare("900", "600")
+        self.assertEqual(L.eval("SETS"), 1)
+        self.assertEqual(self.tooltip_point(), "TOPLEFT ForeverArmouryGearPanel TOPRIGHT -200 0")
+
     def test_the_tooltips_offset_is_worked_out_on_every_hover(self):
         self.route_at()
         row = self.piece_row("Ironforge Greathammer")
@@ -4168,7 +4177,7 @@ class UI(unittest.TestCase):
         self.compare("900", "600", panel_right="error('secret')")
         self.assertEqual(self.tooltip_point(), self.HUNG)
 
-    def test_only_the_second_over_the_panel_goes_under_the_tooltip_when_the_first_is_hidden(self):
+    def test_only_the_second_over_the_panel_goes_beside_the_tooltip_when_the_first_is_hidden(self):
         self.route_at()
         self.gear_hover(self.piece_row("Ironforge Greathammer"))
         L.run("ShoppingTooltip2.GetLeft = function() return 600 end; ShoppingTooltip1.GetLeft = function() return 900 end; "

@@ -76,7 +76,7 @@ local function hangTooltip(x)
   shifted = x
 end
 
-local function stackComparison()
+local function rowComparison()
   if not hovered or (GameTooltip.IsOwned and not GameTooltip:IsOwned(hovered)) then return end
   local shown, over = {}, false
   for _, tip in ipairs({ ShoppingTooltip1 or false, ShoppingTooltip2 or false }) do
@@ -93,7 +93,9 @@ local function stackComparison()
     before = tip
   end
   local overflow = rowOverflow(shown)
-  if overflow and (overflow > 0 or shifted ~= 0) then hangTooltip(overflow > 0 and -overflow or 0) end
+  if not overflow then return end
+  local x = overflow > 0 and -overflow or 0
+  if x ~= shifted then hangTooltip(x) end
 end
 
 local comparisonHooked
@@ -101,7 +103,7 @@ local function hookComparison()
   if comparisonHooked or not (hooksecurefunc and TooltipComparisonManager and TooltipComparisonManager.AnchorShoppingTooltips) then return end
   comparisonHooked = true
   hooksecurefunc(TooltipComparisonManager, "AnchorShoppingTooltips", function(self)
-    if self.tooltip == GameTooltip then stackComparison() end
+    if self.tooltip == GameTooltip then rowComparison() end
   end)
 end
 
@@ -127,7 +129,7 @@ local function showTooltip(row)
   GameTooltip:AddLine(Gear.SourceText(piece), 0.7, 0.7, 0.7, true)
   GameTooltip:AddLine("On the route at level " .. piece.level .. ".", 0.7, 0.7, 0.7, true)
   GameTooltip:Show()
-  stackComparison()
+  rowComparison()
 end
 
 --[[ Shift-click (the game's chat-link click) puts the item's link in the chat box. ]]
