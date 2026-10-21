@@ -2,6 +2,14 @@
 
 ## 0.5.2 (unreleased)
 
+The strip's icons keep their places while it scrolls (forever-armoury #1601):
+
+- **Fixed slots.** The strip is a column of slots of one pitch, an icon, the row under it for the **Now** or level label (kept whether or not the icon has one) and a gap of 4: 63 px at the 44 px icon size. Slot *n* is at the same distance from the strip's top at every scroll position, so the wheel moves the icons one slot and nothing else shifts. Before, the next icon's label, the gap after the points taken and the **⋮** took room only when in view, so the column reflowed as it scrolled and the last page sat higher.
+- **The gap is a line.** What separated the points taken from the ones coming (8 px of extra height) is now a thin gold line, 1 px, drawn in the pitch above the first point coming, so it moves no icon.
+- **The dots and the arrows have places.** The up arrow's place at the top and the down arrow's at the bottom are kept whether or not they show, and the **⋮** has a footer slot right under the last slot. How many slots fit is `floor((height - 76) / pitch)`, the same with or without the arrows. A plan that fits shows whole and fills from the top; the last page of one that doesn't also fills from the top.
+- **Fewer, taller slots.** Counting the label row in every slot, 850 px holds 12 slots at 44 px (it held 15 icons of 44 + 4); 15 at 34 px, 9 at 56 px. A build of 13 points now scrolls in the talent window at 44 px; the icon size setting gets more in. Both strips share this.
+- What only the beta can show: how the line looks between the icons, the wheel moving the icons one slot with nothing else shifting, and whether 12 slots at 44 px is the right trade against the label row.
+
 The Legacy panel works the way the talents' does (forever-armoury #1594):
 
 - **The strip and the panel hang under the Legacy window's side tabs**, on its right edge, instead of past them: the tabs stay clickable and the addon's column lines up with the window. They are anchored to the trees tab itself, so the game keeps them lined up at any scale; 284 below the window's top when there is no such tab. The strip runs from under the tabs to the window's bottom, never past it.

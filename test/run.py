@@ -2568,8 +2568,11 @@ class UI(unittest.TestCase):
             """ % (name, name))
         L.run("FA.HookTalentFrame(); FA.HookCharacterFrame(); FA.HookLegacyFrame(); FA.SetupOptions()")
 
+    TALL = 76 + 63 * 16   # a strip of 16 slots at 44 px: header and footer, then 16 times the pitch
+
     def setUp(self):
-        L.run("RESET('traits'); POPUPS = {}; LIT = nil; LSHOWN_TREE = 1187; LegacySystemFrame:Show(); ForeverArmouryTalentStrip.GetHeight = nil; ForeverArmouryLegacyStrip.GetHeight = nil; FA.Refresh(); FA.RefreshLegacy()")   # the refresh puts out what a test left lit
+        L.run("TALL = %d" % self.TALL)
+        L.run("RESET('traits'); POPUPS = {}; LIT = nil; LSHOWN_TREE = 1187; LegacySystemFrame:Show(); ForeverArmouryTalentStrip.GetHeight = function() return TALL end; ForeverArmouryLegacyStrip.GetHeight = function() return TALL end; FA.Refresh(); FA.RefreshLegacy()")   # TALL: a window that holds the small builds and the 16-rank plan whole; the refresh puts out what a test left lit
 
     def panel(self, key):
         return L.eval("function(k) local p = ForeverArmouryTalentPanel; if k == 'status' then return p.status.text end "
@@ -2921,10 +2924,13 @@ class UI(unittest.TestCase):
         self.assertEqual(self.strip()[2:5], ["taken Deflection 3/5|v a=0.45", "taken Deflection 4/5|v a=0.45", "taken Deflection 5/5|v a=0.45"])
         self.assertEqual(self.strip()[5], "next Tactical Mastery 1/5|[L15] edge")   # level 13: its point is at 15
 
+    def height_for(self, n, size=44):
+        """The height of a strip with n slots: 30 for the header, 46 for the footer, and n times the slot pitch (the icon, the label row under it and 4)."""
+        return 30 + 46 + n * (size + round(size * 0.3) + 2 + 4)
+
     def fit(self, n, size=44):
         """Gives the strip the height that holds n icons of a size (with the arrows a scrolling strip has), and draws it."""
-        k = round(size * 0.3)
-        L.run("ForeverArmouryTalentStrip.GetHeight = function() return %d end; FA.Refresh()" % (24 + k + 2 + 8 + 36 + 16 + (size + 4) * n))
+        L.run("ForeverArmouryTalentStrip.GetHeight = function() return %d end; FA.Refresh()" % self.height_for(n, size))
 
     def test_the_strip_counts_are_settings(self):
         self.assertEqual(L.eval("FA.db.strip.past"), 3)
@@ -3030,6 +3036,17 @@ class UI(unittest.TestCase):
     def wheel(self, delta, times=1):
         L.run("local s = ForeverArmouryTalentStrip; for _ = 1, %d do s.scripts.OnMouseWheel(s, %d) end" % (times, delta))
 
+    def slot_ys(self, name="Talent"):
+        """How far below the strip's top each shown icon sits, top to bottom."""
+        out = L.eval("""function(name)
+          local out = {}
+          for _, ic in ipairs(_G['ForeverArmoury' .. name .. 'Strip'].icons) do
+            if ic.entry and ic.shown then out[#out + 1] = -ic.points[1][5] end
+          end
+          return out
+        end""")(name)
+        return list(out.values())
+
     def arrow(self, which):
         L.run("local b = ForeverArmouryTalentStrip.%s; b.scripts.OnClick(b)" % which)
 
@@ -3043,42 +3060,154 @@ class UI(unittest.TestCase):
 
     def test_the_strip_shows_what_fits_its_height_and_scrolls_to_the_rest(self):
         self.big()
-        # 850 high at 44 px: the arrows and dots take their room, and fifteen icons of 44 and a gap of 4 fit the rest
-        self.assertEqual(self.ns(), list(range(1, 16)))
-        self.assertEqual(self.more(), (True, 36))
+        # 850 high at 44 px: the header and the footer keep their room, and twelve slots of 63 (the icon, its label row and a gap of 4) fit the rest
+        self.assertEqual(self.ns(), list(range(1, 13)))
+        self.assertEqual(self.more(), (True, 39))
         self.assertEqual(self.arrows(), "off on")   # at the top: nothing above
         self.assertEqual(L.eval("ForeverArmouryTalentStrip.icons[1].width"), 44)
         self.assertEqual(L.eval("ForeverArmouryTalentStrip.width"), 58)
         # the wheel moves one icon a notch, down and up
         self.wheel(-1)
-        self.assertEqual(self.ns(), list(range(2, 17)))
+        self.assertEqual(self.ns(), list(range(2, 14)))
         self.assertEqual(self.arrows(), "on on")
         self.wheel(1)
         self.assertEqual(self.ns()[0], 1)
         self.wheel(1, 5)   # past the top stays at the top
         self.assertEqual(self.ns()[0], 1)
-        self.wheel(-1, 100)   # and past the end stays at the end: the last fifteen
-        self.assertEqual(self.ns(), list(range(37, 52)))
+        self.wheel(-1, 100)   # and past the end stays at the end: the last twelve
+        self.assertEqual(self.ns(), list(range(40, 52)))
         self.assertEqual(self.more(), (False, 0))
         self.assertEqual(self.arrows(), "on off")
         # the arrows move a page less one, and stop at the ends
         self.arrow("up")
-        self.assertEqual(self.ns()[0], 23)
+        self.assertEqual(self.ns()[0], 29)
         self.arrow("up"); self.arrow("up"); self.arrow("up")
         self.assertEqual(self.ns()[0], 1)
         self.arrow("down")
-        self.assertEqual(self.ns()[0], 15)
+        self.assertEqual(self.ns()[0], 12)
         # every icon at every offset is placed top to bottom within the strip: the dots under the last when points follow
         self.wheel(1, 100)
         self.assertEqual(self.more()[0], True)
-        ys = L.eval("function() local out = {} for i = 1, 15 do local p = ForeverArmouryTalentStrip.icons[i].points[1]; out[i] = p[5] end return out end")()
-        ys = list(ys.values())
-        self.assertEqual(ys, sorted(ys, reverse=True))   # each lower than the last (the offset down from the top is negative)
-        self.assertLess(-ys[-1] + 44, 850 - 18 - 8)      # and the last ends above the arrow at the bottom
+        ys = self.slot_ys()
+        self.assertEqual(ys, sorted(ys))   # each lower than the last
+        self.assertLess(ys[-1] + 44, 850 - 18 - 8)      # and the last ends above the arrow at the bottom
+
+    # ---- the strip's slots keep their places while it scrolls (#1601)
+    SLOT = 63   # a 44 px icon, the label row under it (13 + 2) and the gap of 4
+    HEAD = 30   # the strip's top to the first slot: the up arrow's place, kept whether or not the arrows show
+
+    def strip_y(self, part, name="Talent"):
+        """How far below the strip's top its divider or dots sit (None when hidden)."""
+        return L.eval("""function(part, name)
+          local p = _G['ForeverArmoury' .. name .. 'Strip'][part]
+          return p.shown ~= false and -p.points[1][5] or nil
+        end""")(part, name)
+
+    def test_every_slot_is_at_the_same_y_at_every_offset(self):
+        self.big(spent=20)   # the next is point 21
+        slots = [self.HEAD + i * self.SLOT for i in range(12)]
+        seen = {}
+        for where, scroll in (("start", lambda: self.wheel(1, 100)), ("mid", lambda: self.wheel(-1, 17)), ("end", lambda: self.wheel(-1, 100))):
+            scroll()
+            seen[where] = self.slot_ys()
+            self.assertEqual(seen[where], slots, where)
+        self.assertEqual(self.ns(), list(range(40, 52)))   # the last page is the end of the build and full
+        # the next icon's label row is in every slot's pitch, whether or not the icon has a label: the icon above and below it are a slot away
+        self.big(spent=20)
+        self.assertEqual(self.ns()[3], 21)
+        self.assertTrue(L.eval("ForeverArmouryTalentStrip.icons[4].label.shown"))
+        self.assertFalse(L.eval("ForeverArmouryTalentStrip.icons[3].label.shown"))
+        self.assertFalse(L.eval("ForeverArmouryTalentStrip.icons[5].label.shown"))
+        ys = self.slot_ys()
+        self.assertEqual([b - a for a, b in zip(ys, ys[1:])], [self.SLOT] * 11)
+        # the first slot is the same with the arrows or without them
+        self.big(spent=20)
+        self.assertEqual(self.arrows(), "on on")
+        self.assertEqual(self.slot_ys()[0], self.HEAD)
+        self.fit(51)
+        self.assertEqual(self.arrows(), "hidden hidden")
+        self.assertEqual(self.slot_ys()[:12], [slots[0] + i * self.SLOT for i in range(12)])
+
+    def test_the_last_page_fills_from_the_top_and_keeps_the_next_in_view(self):
+        self.big(spent=49)   # the next is point 50, in the last page: from = 51 - 12 = 39, not 50 - 3
+        self.assertEqual(self.ns(), list(range(40, 52)))
+        self.assertEqual(self.ns()[self.ns().index(50)], 50)
+        self.assertEqual(self.slot_ys()[0], self.HEAD)
+        self.assertEqual(len(self.slot_ys()), 12)
+        # a plan with fewer points than slots fills from the top and leaves the slots under it empty
+        self.big(spent=20, height=self.height_for(60))
+        self.assertEqual(self.slot_ys(), [self.HEAD + i * self.SLOT for i in range(51)])
+
+    def test_a_build_that_fits_fills_from_the_top(self):
+        self.follow()
+        self.fit(16)
+        self.assertEqual(self.slot_ys(), [self.HEAD + i * self.SLOT for i in range(13)])
+        self.assertEqual(self.arrows(), "hidden hidden")
+        self.assertEqual(self.more(), (False, 0))
+
+    def test_the_separator_is_drawn_inside_the_pitch_and_moves_no_icon(self):
+        self.big(spent=20)   # three taken, the next, eight coming
+        divider = self.strip_y("divider")
+        self.assertEqual(divider, self.HEAD + 4 * self.SLOT - 2)   # above the first coming point, in the gap under the next one's label row
+        ys = self.slot_ys()
+        self.assertTrue(ys[3] + 44 < divider < ys[4])
+        self.assertEqual(L.eval("ForeverArmouryTalentStrip.divider.height"), 1)
+        self.assertEqual(L.eval("ForeverArmouryTalentStrip.divider.width"), 44)
+        # scrolled to points that are all coming, or all taken, there is none and nothing has moved
+        self.wheel(-1, 100)
+        self.assertIsNone(self.strip_y("divider"))
+        self.assertEqual(self.slot_ys(), ys)
+        self.big(spent=51)
+        self.assertIsNone(self.strip_y("divider"))
+        self.assertEqual(self.slot_ys(), ys)
+        # it follows a scroll by a slot with the icons
+        self.big(spent=20)
+        self.wheel(-1)
+        self.assertEqual(self.strip_y("divider"), divider - self.SLOT)
+        # and a view that starts at the next has none above the first icon
+        self.big(spent=20)
+        L.run("FA.db.strip.past = 0; FA.Refresh()")
+        self.assertEqual(self.strip_y("divider"), self.HEAD + self.SLOT - 2)
+
+    def test_the_dots_are_in_a_fixed_footer_slot(self):
+        self.big()
+        foot = self.HEAD + 12 * self.SLOT
+        self.assertEqual(self.strip_y("more"), foot)   # under the last slot
+        for n in (1, 5, 17, 38):
+            self.wheel(1, 100)
+            self.wheel(-1, n)
+            self.assertEqual(self.strip_y("more"), foot)
+        self.wheel(-1, 100)
+        self.assertIsNone(self.strip_y("more"))   # the last page: nothing follows
+        self.assertLessEqual(foot + 16, 850 - 30)   # the footer is above the down arrow's place
+        # the arrows are where they were: the up arrow's place is under the strip's top whether or not it shows
+        self.assertEqual(L.eval("ForeverArmouryTalentStrip.up.points[1][3]"), -8)
+        self.assertEqual(L.eval("ForeverArmouryTalentStrip.down.points[1][3]"), 8)
+
+    def test_the_legacy_strips_slots_keep_their_places_too(self):
+        self.follow_legacy()
+        self.fit_legacy(12)
+        slots = [self.HEAD + i * self.SLOT for i in range(12)]
+        foot = self.HEAD + 12 * self.SLOT
+        for scroll in ("L.run('local s = ForeverArmouryLegacyStrip; for _ = 1, 100 do s.scripts.OnMouseWheel(s, 1) end')",
+                       "L.run('local s = ForeverArmouryLegacyStrip; s.scripts.OnMouseWheel(s, -1)')",
+                       "L.run('local s = ForeverArmouryLegacyStrip; for _ = 1, 100 do s.scripts.OnMouseWheel(s, -1) end')"):
+            eval(scroll)
+            self.assertEqual(self.slot_ys("Legacy"), slots)
+            ended = self.lstrip()[-1].startswith("coming The Quick and the Dead")
+            self.assertEqual(self.strip_y("more", "Legacy"), None if ended else foot)
+        # the next icon's "Now" is in its slot's pitch; the line between it and the ranks coming is not extra height
+        L.run("local s = ForeverArmouryLegacyStrip; for _ = 1, 100 do s.scripts.OnMouseWheel(s, 1) end")
+        self.assertEqual(self.lstrip()[0], "next Working Overtime 1/5|[Now] edge")
+        self.assertEqual(self.strip_y("divider", "Legacy"), self.HEAD + self.SLOT - 2)
+        self.assertEqual(self.slot_ys("Legacy"), slots)
+        L.run("local s = ForeverArmouryLegacyStrip; s.scripts.OnMouseWheel(s, -1)")
+        self.assertIsNone(self.strip_y("divider", "Legacy"))
+        self.assertEqual(self.slot_ys("Legacy"), slots)
 
     def test_the_view_starts_at_the_next_with_taken_points_above_it(self):
         self.big(spent=20)   # the next is point 21
-        self.assertEqual(self.ns(), list(range(18, 33)))   # three taken above it (the setting's), and the rest of the window below
+        self.assertEqual(self.ns(), list(range(18, 30)))   # three taken above it (the setting's), and the rest of the window below
         self.assertEqual(L.eval("ForeverArmouryTalentStrip.icons[4].entry.kind"), "next")
         self.assertEqual(L.eval("ForeverArmouryTalentStrip.icons[4].entry.n"), 21)
         L.run("FA.db.strip.past = 0; FA.Refresh()")
@@ -3087,9 +3216,9 @@ class UI(unittest.TestCase):
         self.assertEqual(self.ns()[0], 16)
         # the end of the build: the last window, not an empty one
         self.big(spent=50)
-        self.assertEqual(self.ns(), list(range(37, 52)))
+        self.assertEqual(self.ns(), list(range(40, 52)))
         self.big(spent=51)
-        self.assertEqual(self.ns(), list(range(37, 52)))
+        self.assertEqual(self.ns(), list(range(40, 52)))
         self.assertFalse(any("Now" in line for line in self.strip()))
 
     def test_the_next_icon_stays_in_view_as_points_are_spent(self):
@@ -3145,27 +3274,27 @@ class UI(unittest.TestCase):
         self.assertNotEqual(self.arrows(), "hidden hidden")
         self.assertEqual(len(self.strip()), 6)
         # a height that holds it without them: the whole build, no arrows, no room lost to them
-        L.run("ForeverArmouryTalentStrip.GetHeight = function() return %d end; FA.Refresh()" % (47 + 48 * 13))
+        L.run("ForeverArmouryTalentStrip.GetHeight = function() return %d end; FA.Refresh()" % self.height_for(13))
         self.assertEqual((self.arrows(), len(self.strip())), ("hidden hidden", 13))
-        L.run("ForeverArmouryTalentStrip.GetHeight = function() return %d end; FA.Refresh()" % (47 + 48 * 13 - 1))
+        L.run("ForeverArmouryTalentStrip.GetHeight = function() return %d end; FA.Refresh()" % (self.height_for(13) - 1))
         self.assertNotEqual(self.arrows(), "hidden hidden")
 
     def test_the_height_is_read_from_the_strip_with_a_fallback_and_follows_a_resize(self):
         self.big(height=0)   # the game hasn't laid it out: 850 is the live window's
-        self.assertEqual(len(self.strip()), 15)
-        self.big(height=531)   # 99 + 48 * 9
+        self.assertEqual(len(self.strip()), 12)
+        self.big(height=self.height_for(9))
         self.assertEqual(len(self.strip()), 9)
         # laid out later: the game says the size changed, and the strip draws again for it
-        L.run("local s = ForeverArmouryTalentStrip; s.GetHeight = function() return %d end" % (99 + 48 * 12))
+        L.run("local s = ForeverArmouryTalentStrip; s.GetHeight = function() return %d end" % self.height_for(12))
         self.assertEqual(len(self.strip()), 9)
-        L.run("local s = ForeverArmouryTalentStrip; s.scripts.OnSizeChanged(s, 58, %d); FLUSH()" % (99 + 48 * 12))
+        L.run("local s = ForeverArmouryTalentStrip; s.scripts.OnSizeChanged(s, 58, %d); FLUSH()" % self.height_for(12))
         self.assertEqual(len(self.strip()), 12)
         # the same height again draws nothing more
-        L.run("FA.Refresh(); local s = ForeverArmouryTalentStrip; s.scripts.OnSizeChanged(s, 58, %d)" % (99 + 48 * 12))
+        L.run("FA.Refresh(); local s = ForeverArmouryTalentStrip; s.scripts.OnSizeChanged(s, 58, %d)" % self.height_for(12))
         self.assertEqual(len(self.strip()), 12)
 
     def test_the_size_setting_sets_the_icons_and_how_many_fit(self):
-        for size, count in ((34, 19), (44, 15), (56, 12)):
+        for size, count in ((34, 15), (44, 12), (56, 9)):
             self.big(size=size)
             self.assertEqual(len(self.strip()), count, size)
             self.assertEqual(L.eval("ForeverArmouryTalentStrip.width"), size + 14)
@@ -3187,7 +3316,7 @@ class UI(unittest.TestCase):
         # the size is set again and the same icons are drawn again at it
         self.big(size=34)
         L.run("FA.db.strip.size = 50; FA.Refresh()")
-        self.assertEqual((L.eval("ForeverArmouryTalentStrip.icons[1].width"), len(self.strip())), (50, 13))
+        self.assertEqual((L.eval("ForeverArmouryTalentStrip.icons[1].width"), len(self.strip())), (50, 10))
 
     def test_hover_and_click_work_on_an_icon_that_has_been_scrolled(self):
         self.big(spent=30)   # the next is point 31
@@ -4391,8 +4520,7 @@ class UI(unittest.TestCase):
 
     # ---- the strip is shared: its size and its scroll are the settings of both
     def fit_legacy(self, n, size=44):
-        k = round(size * 0.3)
-        L.run("ForeverArmouryLegacyStrip.GetHeight = function() return %d end; FA.RefreshLegacy()" % (24 + k + 2 + 8 + 36 + 16 + (size + 4) * n))
+        L.run("ForeverArmouryLegacyStrip.GetHeight = function() return %d end; FA.RefreshLegacy()" % self.height_for(n, size))
 
     def test_the_legacy_strip_scrolls_and_follows_the_size_setting(self):
         self.follow_legacy()
