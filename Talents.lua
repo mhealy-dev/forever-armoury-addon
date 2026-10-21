@@ -15,7 +15,12 @@
      talent being { tab, cell, row, col, name, icon, rank, max, node }; rank is what's spent, staged points included, and
      node names it to the game (a node id, or a talent index). From the trait system a talent also has x and y, its
      node's position and spell, its definition's spell id (the strip's tooltip shows it), and the view has grid, each tree's { colStep, rowStep, originX, topY } it was sorted by, and
-     dropped, each tree's nodes that didn't sort into a cell of their own: { { talent, why }, ... }.
+     dropped, each tree's nodes that didn't sort into a cell of their own: { { talent, why }, ... }. A node of the trait system
+     is read whatever its maxRanks (the Forever client gives 0 for many): max is maxRanks, else totalMaxRanks, else its
+     entry's, else nil; a node's tree is whichever of its groupIDs (the live client gives 3 to 7) is one of the trees' groups,
+     and a node with none goes to a tree by its x. The view also has
+     skipped, the nodes not read ({ info, skip } for a node the window skips too) and byPosition, each tree's count of
+     nodes placed by x.
 
      FA.Talents.View([configID])     a spec's view (the active one's without a config), or nil before the game answers
      FA.Talents.Ready()              whether the active spec's view is in
@@ -38,7 +43,8 @@
      FA.Talents.Toggle()             open or close the talent window
      FA.Talents.Loaded(name)         whether an ADDON_LOADED name is the talent UI's
      FA.Talents.Dump()               every talent by tree, row and column, with the positions and grid it came from and
-                                     the nodes left out, as lines of text (/fa debug) ]]
+                                     the nodes left out, as lines of text (/fa debug)
+     FA.Talents.DumpNodes()          every node of the active config raw, with the tree it went to and why (/fa debug nodes) ]]
 
 local _, FA = ...
 local Talents = {}
@@ -81,6 +87,7 @@ local function treeOf(configID)
 end
 
 local function round(x) return math.floor(x + 0.5) end
+local function num(x) return x == math.floor(x) and string.format("%d", x) or string.format("%.1f", x) end
 --[[ The smallest gap between the distinct values in a list, the pitch of the grid they sit on (nil with fewer than two
      values to measure it by), then the first value and the last. ]]
 local function pitch(values)
@@ -157,19 +164,117 @@ Talents.UNKNOWN_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
 function Talents.Icon(t) return t and t.icon or Talents.UNKNOWN_ICON end
 
 --[[ ---- the trait system (the Forever client) ---- ]]
-local function readTraits(configID)
+--[[ A talent's rank count. The Forever client's nodes don't all give maxRanks (some answer 0), so the count is maxRanks
+     when it's above 0, else totalMaxRanks, else the first entry's maxRanks; nil when none says (the cell is drawn with
+     a "?" where the count goes). ]]
+local function maxRankOf(configID, node)
+  if (node.maxRanks or 0) > 0 then return node.maxRanks end
+  if (node.totalMaxRanks or 0) > 0 then return node.totalMaxRanks end
+  local entryID = node.entryIDs and node.entryIDs[1]
+  local entry = entryID and game("C_Traits.GetEntryInfo", configID, entryID)
+  if entry and (entry.maxRanks or 0) > 0 then return entry.maxRanks end
+  return nil
+end
+
+--[[ A tree for each node recs still has no tree for, by where it sits. The trees are thousands of x apart and a tree's
+     columns 600, so the nodes that do have a group say each tree's x range, and a node without one goes to the tree
+     whose range it falls in, else the nearest. When no node has a group, the x values are split into one run per tree
+     at the widest gaps, left to right in the trees' order. Each rec says why it went where. ]]
+local function placeByPosition(recs, count)
+  local lo, hi = {}, {}
+  for _, r in ipairs(recs) do
+    if r.tab then
+      local x = r.info.posX
+      lo[r.tab], hi[r.tab] = math.min(lo[r.tab] or x, x), math.max(hi[r.tab] or x, x)
+    end
+  end
+  local cuts
+  if next(lo) == nil then
+    local seen, xs = {}, {}
+    for _, r in ipairs(recs) do
+      if not r.skip and not seen[r.info.posX] then seen[r.info.posX] = true; xs[#xs + 1] = r.info.posX end
+    end
+    table.sort(xs)
+    local gaps = {}
+    for i = 2, #xs do gaps[#gaps + 1] = { size = xs[i] - xs[i - 1], at = xs[i] } end
+    table.sort(gaps, function(a, b) return a.size > b.size end)
+    cuts = {}
+    for i = 1, math.min(count - 1, #gaps) do cuts[#cuts + 1] = gaps[i].at end
+  end
+  for _, r in ipairs(recs) do
+    if not r.tab and not r.skip then
+      local x = r.info.posX
+      local groups = r.info.groupIDs and #r.info.groupIDs or 0
+      local lack = (groups > 0 and (groups == 1 and "its group is not one of the tree's" or "none of its " .. groups .. " groups is one of the tree's") or "no group")
+      if cuts then
+        r.tab = 1
+        for _, at in ipairs(cuts) do if x >= at then r.tab = r.tab + 1 end end
+        r.why = lack .. ", and no node has one: split by the widest gaps in x"
+      else
+        local best, away
+        for t = 1, count do
+          if lo[t] then
+            local d = x < lo[t] and lo[t] - x or x > hi[t] and x - hi[t] or 0
+            if not away or d < away then best, away = t, d end
+          end
+        end
+        r.tab = best
+        r.why = lack .. ", so by x: " .. (away == 0 and "within" or "nearest to") .. " " .. num(lo[best]) .. " to " .. num(hi[best])
+      end
+      r.byPosition = true
+    end
+  end
+end
+
+--[[ Every node of a config's tree, as recs { info, tab, why, skip, byPosition }: tab is the display group (tree) it went
+     to and why, skip being the reason a node is left unread. A node is left out only when the window would skip it
+     (isVisible is false) or has no position to sort by. Answers the groups in order and the recs, or nil. ]]
+local function readNodes(configID)
   local treeID = treeOf(configID)
   if not treeID then return nil end
   local groups = game("C_Traits.GetGroupDisplayInfoByTreeID", treeID)
   if not groups or #groups == 0 then return nil end
   table.sort(groups, function(a, b) return (a.orderIndex or 0) < (b.orderIndex or 0) end)
-  local out, tabOf = { trees = {}, cells = {}, configID = configID }, {}
-  for i, g in ipairs(groups) do out.trees[i] = { name = g.displayName, icon = g.icon }; out.cells[i] = {}; tabOf[g.groupID] = i end
-  local nodes = {}
+  local tabOf = {}
+  for i, g in ipairs(groups) do tabOf[g.groupID] = i end
+  local recs = {}
   for _, nodeID in ipairs(game("C_Traits.GetTreeNodes", treeID) or {}) do
     local n = game("C_Traits.GetNodeInfo", configID, nodeID)
-    local tab = n and n.groupIDs and n.groupIDs[1] and tabOf[n.groupIDs[1]]
-    if tab and n.maxRanks and n.maxRanks > 0 then nodes[#nodes + 1] = { tab = tab, info = n } end
+    local rec = { info = n or { ID = nodeID } }
+    if not n then rec.skip = "the game gave no information on it"
+    elseif n.isVisible == false then rec.skip = "isVisible is false, which the window skips too"
+    elseif not (n.posX and n.posY) then rec.skip = "no position"
+    else
+      --[[ the live client gives a node 3 to 7 groups, the tree's talent group being any of them: the one that is a display group
+           names the tree; if the groups of two trees are among them, the first is taken and /fa debug nodes says so ]]
+      local found, other = nil, nil
+      for _, g in ipairs(n.groupIDs or {}) do
+        if tabOf[g] then
+          if not found then found = g elseif tabOf[g] ~= tabOf[found] then other = other or g end
+        end
+      end
+      if found then
+        rec.tab, rec.why = tabOf[found], "group " .. found .. (other and (", the first of its groups that is a tree's; group " .. other .. " is another tree's too") or "")
+      end
+    end
+    recs[#recs + 1] = rec
+  end
+  placeByPosition(recs, #groups)
+  return groups, recs
+end
+
+local function readTraits(configID)
+  local groups, recs = readNodes(configID)
+  if not groups then return nil end
+  local out, nodes = { trees = {}, cells = {}, configID = configID, skipped = {}, byPosition = {} }, {}
+  for i, g in ipairs(groups) do out.trees[i] = { name = g.displayName, icon = g.icon }; out.cells[i] = {}; out.byPosition[i] = 0 end
+  for _, r in ipairs(recs) do
+    if r.tab then
+      nodes[#nodes + 1] = { tab = r.tab, info = r.info }
+      if r.byPosition then out.byPosition[r.tab] = out.byPosition[r.tab] + 1 end
+    else
+      out.skipped[#out.skipped + 1] = r
+    end
   end
   if #nodes == 0 then return nil end
   --[[ each tree's rows and columns from its own grid; a node that lands outside the four columns and seven rows a
@@ -185,7 +290,7 @@ local function readTraits(configID)
     local cell = (row - 1) * 4 + (col - 1)
     local name, icon, spell = nodeNameAndIcon(configID, n.info)
     local talent = { tab = n.tab, cell = cell, row = row, col = col, name = name, icon = icon, rank = n.info.ranksPurchased or 0,
-      max = n.info.maxRanks, node = n.info.ID, x = x, y = y, spell = spell }
+      max = maxRankOf(configID, n.info), node = n.info.ID, x = x, y = y, spell = spell }
     local why, there = nil, out.cells[n.tab][cell]
     if col < 1 or col > 4 then why = "column " .. col .. ", outside the four"
     elseif row > 7 then why = "row " .. row .. ", below the seventh"
@@ -378,7 +483,6 @@ function Talents.Toggle()
   elseif ToggleTalentFrame then ToggleTalentFrame() end
 end
 
-local function num(x) return x == math.floor(x) and string.format("%d", x) or string.format("%.1f", x) end
 --[[ A talent as /fa debug says it: row,column (cell) name rank/max, then where its node is; a talent left out has no
      cell to name. ]]
 local function line(x, out)
@@ -397,6 +501,10 @@ function Talents.Dump()
       lines[#lines + 1] = "   columns " .. num(g.colStep) .. " apart from x " .. num(g.originX) .. " (" .. g.origin .. "), rows " ..
         num(g.rowStep) .. " apart from y " .. num(g.topY) .. (g.borrowed and (" (" .. g.borrowed .. " spaced as another tree's)") or "")
     end
+    local byPosition = v.byPosition and v.byPosition[t] or 0
+    if byPosition > 0 then
+      lines[#lines + 1] = "   " .. byPosition .. (byPosition == 1 and " node" or " nodes") .. " here had no group the game's list knows, so went by position (/fa debug nodes says why)"
+    end
     for cell = 0, 27 do
       local x = v.cells[t][cell]
       if x then lines[#lines + 1] = "   " .. line(x) end
@@ -406,8 +514,39 @@ function Talents.Dump()
       left = left + 1
     end
   end
+  for _, r in ipairs(v.skipped or {}) do
+    lines[#lines + 1] = "left unread: node " .. tostring(r.info.ID) .. " at " .. (r.info.posX and (num(r.info.posX) .. "," .. num(r.info.posY)) or "no position") .. ": " .. r.skip
+  end
   if v.grid then
     lines[#lines + 1] = left == 0 and "Every talent has a cell of its own." or (left .. (left == 1 and " talent" or " talents") .. " left out, marked above.")
+  end
+  return lines
+end
+
+--[[ Every node of the active config as the game gives it, one line each, and the tree the addon gave it and why: the raw
+     fields that decide a talent's place (/fa debug nodes). ]]
+local function groupList(ids, named)
+  if not ids or #ids == 0 then return "" end
+  local out = {}
+  for i, g in ipairs(ids) do out[i] = tostring(g) .. (named[g] and ("=" .. named[g]) or "") end
+  return " [" .. table.concat(out, " ") .. "]"
+end
+
+function Talents.DumpNodes()
+  local configID = activeConfig()
+  local groups, recs
+  if configID then groups, recs = readNodes(configID) end
+  if not recs then return { "The game hasn't given its talents yet. Open the talent window and try again." } end
+  local lines = { #recs .. (#recs == 1 and " node" or " nodes") .. " in config " .. tostring(configID) .. "'s tree; in groupIDs a tree's group is marked with its name." }
+  local named = {}
+  for _, g in ipairs(groups) do named[g.groupID] = g.displayName or "?" end
+  for _, r in ipairs(recs) do
+    local n = r.info
+    local to = r.tab and ("tree " .. r.tab .. " " .. (groups[r.tab].displayName or "?") .. " (" .. r.why .. ")") or ("not read: " .. r.skip)
+    lines[#lines + 1] = "node " .. tostring(n.ID) .. " posX " .. tostring(n.posX) .. " posY " .. tostring(n.posY) ..
+      " maxRanks " .. tostring(n.maxRanks) .. " totalMaxRanks " .. tostring(n.totalMaxRanks) ..
+      " groupIDs " .. (n.groupIDs and #n.groupIDs or "nil") .. groupList(n.groupIDs, named) .. " entryIDs " .. (n.entryIDs and #n.entryIDs or "nil") ..
+      " isVisible " .. tostring(n.isVisible) .. " type " .. tostring(n.type) .. " subTreeID " .. tostring(n.subTreeID) .. " -> " .. to
   end
   return lines
 end

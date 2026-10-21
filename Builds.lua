@@ -127,11 +127,32 @@ function FA.PointsAfterReset(build)
   return math.min(#points, total)
 end
 
+--[[ Where a pick is, as words: "Arms row 3, column 2" (a tree's name from the game, else its number). ]]
+function FA.Where(tab, cell)
+  local trees = FA.Talents.Trees()
+  local tree = trees and trees[tab] and trees[tab].name
+  return (tree or ("tree " .. tab)) .. " row " .. (math.floor(cell / 4) + 1) .. ", column " .. (cell % 4 + 1)
+end
+
+--[[ The picks of a build that no talent of the trees sits under, as a sentence ("2 talents of this build aren't in your
+     trees: Arms row 3, column 2, and Fury row 1, column 1"), naming at most three; nil when there are none. ]]
+function FA.UnplacedText(unplaced)
+  if not unplaced or #unplaced == 0 then return nil end
+  local cells = {}
+  for i, u in ipairs(unplaced) do if i <= 3 then cells[i] = FA.Where(u.tab, u.cell) end end
+  if #unplaced > 3 then cells[#cells + 1] = "and " .. (#unplaced - 3) .. " more" end
+  return #unplaced .. (#unplaced == 1 and " talent of this build isn't" or " talents of this build aren't") .. " in your trees: " ..
+    table.concat(cells, "; ")
+end
+
 --[[ Where a spec is on a build (the active spec without a view). Answers a table, or nil and why:
        next     the first point of the build not taken: { n, talent, rank, level }, talent being Talents.At's, rank the
                 rank that point makes and level the level the build takes it at; nil once every point is taken
        left     every point not taken, in the build's order, each as next is
        taken    every point of the build the spec has, in the build's order, each as next is (the strip's past)
+       unplaced the picks no talent of the view sits under (the site may be newer than this addon, or the game's nodes
+                didn't sort): { { n, tab, cell, level }, ... }; the build goes on without them
+       blocked  the first of those, which Apply stops at; nil when there are none
        extra    the talents with more ranks than the build gives them: { { talent, over }, ... }
        points   how many points the build has
        spent    how many points the spec has spent
@@ -142,17 +163,19 @@ function FA.Progress(build, view)
   if not points then return nil, "That build's code doesn't read." end
   view = view or FA.Talents.View()
   if not view then return nil, "The game hasn't given its talents yet. Open the talent window and try again." end
-  local planned, byKey, taken, left, had = {}, {}, 0, {}, {}
+  local planned, taken, left, had, unplaced = {}, 0, {}, {}, {}
   local first = FA.FirstLevel(build)
   for n, p in ipairs(points) do
     local t = FA.Talents.At(p.tab, p.cell, view)
-    if not t then return nil, "A talent in this build isn't in your talent trees. The site may be newer than this addon." end
-    local key = p.tab * 100 + p.cell
-    planned[key] = (planned[key] or 0) + 1
-    byKey[key] = t
-    local point = { n = n, talent = t, rank = planned[key], level = n + first - 1 }
-    if planned[key] <= t.rank then taken = taken + 1; had[#had + 1] = point
-    else left[#left + 1] = point end
+    if not t then
+      unplaced[#unplaced + 1] = { n = n, tab = p.tab, cell = p.cell, level = n + first - 1 }
+    else
+      local key = p.tab * 100 + p.cell
+      planned[key] = (planned[key] or 0) + 1
+      local point = { n = n, talent = t, rank = planned[key], level = n + first - 1 }
+      if planned[key] <= t.rank then taken = taken + 1; had[#had + 1] = point
+      else left[#left + 1] = point end
+    end
   end
   local extra = {}
   for tab, cells in pairs(view.cells) do
@@ -164,44 +187,66 @@ function FA.Progress(build, view)
   table.sort(extra, function(a, b) return a.talent.tab * 100 + a.talent.cell < b.talent.tab * 100 + b.talent.cell end)
   local spent = FA.Talents.Spent(view)
   local level = UnitLevel("player") or 1
-  return { next = left[1], left = left, taken = had, extra = extra, points = #points, spent = spent, off = spent - taken,
+  return { next = left[1], left = left, taken = had, unplaced = unplaced, blocked = unplaced[1], extra = extra, points = #points, spent = spent, off = spent - taken,
     due = math.max(0, math.min(#points, level - first + 1)) }
 end
 
 --[[ What the strip beside the talent window shows of a build's progress (Progress's answer): the last `past` points
      taken, the next, then up to `coming` more, each as { kind = "taken" | "next" | "coming", n, talent, rank, level }; the
      next also says now, whether its point can be spent (its level has come, and the spec has no point off the build).
-     Answers the list and how many points follow it. A build that's off its order shows the points Progress could place. ]]
+     A pick no talent sits under is an entry of kind "unplaced" in its place in the order, with no talent and its tab and
+     cell. Answers the list and how many points follow it. A build that's off its order shows the points Progress could place. ]]
 function FA.StripPlan(p, past, coming)
   local out = {}
   local function add(kind, point)
-    local e = { kind = kind, n = point.n, talent = point.talent, rank = point.rank, level = point.level }
+    local e = { kind = kind, n = point.n, talent = point.talent, rank = point.rank, level = point.level, tab = point.tab, cell = point.cell }
     out[#out + 1] = e
     return e
   end
-  for i = math.max(1, #p.taken - past + 1), #p.taken do add("taken", p.taken[i]) end
+  --[[ the points before the next one (taken, and picks off the trees) and those after it, each in the build's order ]]
+  local nextN = p.next and p.next.n or math.huge
+  local before, after = {}, {}
+  for _, point in ipairs(p.taken) do before[#before + 1] = { kind = "taken", point = point } end
+  for _, point in ipairs(p.unplaced or {}) do
+    local list = point.n < nextN and before or after
+    list[#list + 1] = { kind = "unplaced", point = point }
+  end
+  for i = 2, #p.left do after[#after + 1] = { kind = "coming", point = p.left[i] } end
+  local function byN(a, b) return a.point.n < b.point.n end
+  table.sort(before, byN)
+  table.sort(after, byN)
+  for i = math.max(1, #before - past + 1), #before do add(before[i].kind, before[i].point) end
   if p.next then add("next", p.next).now = p.next.n <= p.due and p.off == 0 end
-  for i = 2, math.min(#p.left, coming + 1) do add("coming", p.left[i]) end
-  return out, math.max(0, #p.left - 1 - coming)
+  for i = 1, math.min(#after, coming) do add(after[i].kind, after[i].point) end
+  return out, math.max(0, #after - coming)
 end
 
 --[[ What Apply would spend now: the build's points not taken, in order, as many as the character has unspent (and no
-     more than limit, when one is given: the strip's click takes one). Answers the list of talents and the progress, or
-     nil and why. ]]
+     more than limit, when one is given: the strip's click takes one). A pick no talent of the trees sits under stops it:
+     the points before that pick are spent, none after. Answers the list of talents, nil and the progress, and that
+     pick when it cut the list short; or nil and why. ]]
 function FA.PlanApply(build, limit)
   if FA.Talents.HasStaged() then return nil, FA.Talents.STAGED end
   local p, why = FA.Progress(build)
   if not p then return nil, why end
   if p.off > 0 then return nil, "You have " .. p.off .. (p.off == 1 and " point" or " points") .. " this build doesn't, so Apply can't follow it." end
-  if not p.next then return nil, "Every point of this build is spent." end
+  if not p.next then
+    return nil, p.blocked and "Every point of this build that your trees have is spent." or "Every point of this build is spent."
+  end
   local unspent = FA.Talents.Unspent()
   if unspent == nil then unspent = math.max(0, p.due - p.spent) end
   if unspent <= 0 then
     return nil, p.next.level > (UnitLevel("player") or 1) and ("Your next point comes at level " .. p.next.level .. ".") or "You have no points to spend."
   end
-  local list = {}
-  for i = 1, math.min(unspent, #p.left, limit or math.huge) do list[i] = p.left[i].talent end
-  return list, nil, p
+  local list, wanted = {}, math.min(unspent, #p.left, limit or math.huge)
+  for i = 1, wanted do
+    if p.blocked and p.left[i].n > p.blocked.n then break end
+    list[i] = p.left[i].talent
+  end
+  if #list == 0 then
+    return nil, "Apply stops at " .. FA.Where(p.blocked.tab, p.blocked.cell) .. ", a talent your trees don't have, so there is nothing to spend before it."
+  end
+  return list, nil, p, #list < wanted and p.blocked or nil
 end
 
 --[[ The talents of a list as a short line: "Deflection x3, Cruelty", in the order they come. ]]
@@ -221,15 +266,16 @@ function FA.Summary(list, limit)
 end
 
 --[[ Spends the points PlanApply chose (the first `limit` of them, when one is given), all or none. Answers true and what
-     was spent, or false and why. ]]
+     was spent (and, when a pick off the trees cut it short, that pick as a third answer), or false and why. ]]
 function FA.Apply(build, limit)
   local ok, why = FA.Talents.CanChange()
   if not ok then return false, why end
-  local list
-  list, why = FA.PlanApply(build, limit)
-  if not list then return false, why end
+  local plan = { FA.PlanApply(build, limit) }   -- list, why, progress, the pick that stopped it
+  local list, stopped = plan[1], plan[4]
+  if not list then return false, plan[2] end
   ok, why = FA.Talents.Learn(list)
   if not ok then return false, why end
+  if stopped then return true, FA.Summary(list), stopped end
   return true, FA.Summary(list)
 end
 

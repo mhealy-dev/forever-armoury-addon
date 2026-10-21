@@ -4,6 +4,7 @@ a Legacy plan code read and written, the game's trait nodes turned into trees of
 talent tree, the next pieces of a gear route against what the character wears and carries, and a Legacy plan bought across
 the three Legacy trees' configs. Run with `python test/run.py` (needs `pip install lupa`). The game's Lua
 is 5.1; LuaJIT's is used when lupa has it, else lupa's default."""
+import json
 import locale
 import os
 import sys
@@ -31,6 +32,7 @@ TREE = {
   { { "Booming Voice", 1, 2, 0, 5 }, { "Cruelty", 1, 3, 0, 5 } },   -- nothing in its first column: its origin comes from the full trees' spacing
   { { "Shield Specialization", 1, 2, 0, 5 }, { "Anticipation", 1, 3, 0, 5 }, { "Toughness", 2, 1, 0, 5 }, { "Last Stand", 3, 4, 0, 1 } },
 }
+TREE_SMALL = TREE   -- RESET puts it back after a test swaps in the whole warrior
 TREE_NAMES = { "Arms", "Fury", "Protection" }
 PLAYER = { level = 60, class = "WARRIOR" }
 API = "traits"   -- or "legacy"
@@ -48,6 +50,12 @@ end
 -- the trait system: node ids 101.., placed on a grid, each tree's own: GRID[tab] = { x of column 1, column pitch, y of
 -- tier 1, row pitch }, by default 600 apart and trees 4000 apart. The second tree is listed first so the group order
 -- comes from orderIndex, not the list. EXTRA(tab, posX, posY, name) adds a node off the talent list, as a misplaced one.
+-- The live client gives less than the docs say: NO_MAX answers maxRanks 0 (with TOTAL, totalMaxRanks has the count, else the
+-- node's entry does, unless NO_ENTRY), NO_GROUP[node] = true (or .all) answers groupIDs empty, and HIDDEN[node] = true
+-- isVisible false; UNKNOWN_GROUP[node] = a group id the tree's list doesn't have. MANY_GROUPS gives every node four groups,
+-- its tree's the third (the beta's dump: 3 to 7 a node, and groupIDs[1] not the display group); BOTH_TREES[node] = true gives
+-- a node the groups of its own tree and the next.
+NO_MAX, TOTAL, NO_ENTRY, NO_GROUP, HIDDEN, UNKNOWN_GROUP, MANY_GROUPS, BOTH_TREES = false, false, false, {}, {}, {}, false, {}
 NODES, DEFS = {}, {}
 function NODES_FROM(grid)
   NODES, DEFS = {}, {}
@@ -122,9 +130,12 @@ C_Traits = {
   GetNodeInfo = function(configID, nodeID)
     if configID == 99 then return nodeID == 110298 and { ID = nodeID, ranksPurchased = TALENTED, maxRanks = 5 } or nil end
     local n = NODES[nodeID]
-    return { ID = nodeID, posX = n.posX, posY = n.posY, groupIDs = { n.tab * 10 }, entryIDs = { nodeID * 2 }, ranksPurchased = rankOf(configID, nodeID), maxRanks = n.talent[5] }
+    local groups = (NO_GROUP.all or NO_GROUP[nodeID]) and {} or UNKNOWN_GROUP[nodeID] and { UNKNOWN_GROUP[nodeID] } or
+      BOTH_TREES[nodeID] and { n.tab * 10, n.tab * 10 % 30 + 10 } or MANY_GROUPS and { 5001, 5002, n.tab * 10, 5003 } or { n.tab * 10 }
+    return { ID = nodeID, posX = n.posX, posY = n.posY, groupIDs = groups, entryIDs = { nodeID * 2 }, ranksPurchased = rankOf(configID, nodeID),
+      maxRanks = not NO_MAX and n.talent[5] or 0, totalMaxRanks = NO_MAX and TOTAL and n.talent[5] or nil, isVisible = not HIDDEN[nodeID], type = 0 }
   end,
-  GetEntryInfo = function(configID, entryID) return { definitionID = entryID / 2, maxRanks = NODES[entryID / 2].talent[5] } end,
+  GetEntryInfo = function(configID, entryID) return { definitionID = entryID / 2, maxRanks = not NO_ENTRY and NODES[entryID / 2].talent[5] or nil } end,
   GetDefinitionInfo = function(defID) return DEFS[defID] end,
   GetTreeCurrencyInfo = function(configID, treeID, excludeStaged) return { { traitCurrencyID = 1, quantity = UNSPENT(), spent = spentIn(7) } } end,
   ConfigHasStagedChanges = function(configID) return next(STAGED) ~= nil end,
@@ -275,6 +286,7 @@ function RESET(api)
   FLUSH()
   API = api or "traits"
   ForeverArmouryDB, ForeverArmouryCharDB = nil, nil; FA.Init(); FA.Talents.Forget(); PLAYER.level = 60
+  TREE, NO_MAX, TOTAL, NO_ENTRY, NO_GROUP, HIDDEN, UNKNOWN_GROUP, MANY_GROUPS, BOTH_TREES = TREE_SMALL, false, false, false, {}, {}, {}, false, {}
   for _, tab in ipairs(TREE) do for _, t in ipairs(tab) do t[4] = 0 end end
   NODES_FROM()
   STAGED, OTHER, LOG, PRINTED, SHIFT = {}, {}, {}, "", false
@@ -681,6 +693,270 @@ class Talents(unittest.TestCase):
         self.assertEqual(lines[-1], "Every talent has a cell of its own.")
 
 
+# The warrior's three trees as the site lays them out (public/data/talents.js in forever-armoury, client build 1.60.1.70425): each
+# talent is (row, column, max rank, name). The game's window draws the same cells.
+SITE_WARRIOR = [
+    [  # Arms
+        (1, 1, 3, "Improved Heroic Strike"), (1, 2, 5, "Deflection"), (1, 3, 3, "Improved Rend"),
+        (2, 1, 2, "Improved Charge"), (2, 2, 5, "Improved Tactical Mastery"), (2, 4, 2, "Improved Overpower"),
+        (3, 2, 1, "Anger Management"), (3, 3, 3, "Deep Wounds"), (4, 1, 1, "Spearing Strike"),
+        (4, 2, 3, "Two-Handed Weapon Specialization"), (4, 3, 2, "Impale"), (5, 1, 5, "Bloodthrill"),
+        (5, 2, 1, "Sweeping Strikes"), (5, 3, 5, "Weaponmaster"), (6, 1, 2, "Improved Slam"),
+        (6, 3, 3, "Improved Hamstring"), (7, 2, 1, "Mortal Strike"),
+    ],
+    [  # Fury
+        (1, 2, 5, "Booming Voice"), (1, 3, 5, "Cruelty"), (2, 2, 5, "Lingering Rage"),
+        (2, 3, 5, "Unbridled Wrath"), (3, 1, 3, "Furious Precision"), (3, 2, 1, "Piercing Howl"),
+        (3, 3, 3, "Blood Craze"), (4, 1, 5, "Dual Wield Specialization"), (4, 2, 1, "Raging Blows"),
+        (4, 3, 5, "Enrage"), (4, 4, 2, "Improved Execute"), (5, 1, 2, "Improved Berserker Rage"),
+        (5, 2, 1, "Death Wish"), (5, 4, 2, "Improved Intercept"), (6, 2, 5, "Flurry"),
+        (6, 3, 2, "Gore Drinker"), (7, 2, 1, "Bloodthirst"),
+    ],
+    [  # Protection
+        (1, 1, 2, "Improved Bloodrage"), (1, 2, 5, "Shield Specialization"), (1, 3, 5, "Iron Will"),
+        (2, 1, 5, "Anticipation"), (2, 3, 3, "Improved Revenge"), (2, 4, 3, "Improved Thunder Clap"),
+        (3, 1, 1, "Last Stand"), (3, 2, 2, "Master of Defense"), (3, 3, 3, "Improved Disarm"),
+        (3, 4, 3, "Defiance"), (4, 1, 3, "Improved Sunder Armor"), (4, 2, 1, "Vanguard"),
+        (4, 3, 2, "Improved Shield Bash"), (5, 1, 2, "Improved Shield Wall"), (5, 2, 1, "Concussion Blow"),
+        (5, 3, 3, "Focused Rage"), (6, 3, 5, "Bastion"), (7, 2, 1, "Shield Slam"),
+    ],
+]
+
+
+# Where the trees' first columns sit in the live client's positions (the debug output of the first beta try): 600 apart, the
+# trees thousands apart.
+LIVE_GRID = "{ { 1020, 600, 1500, 600 }, { 5020, 600, 1500, 600 }, { 9080, 600, 1500, 600 } }"
+
+
+def live_warrior(max_ranks=False, groups=True, entry=True, total=False):
+    """Swaps the whole warrior into the game stub, placed as the live client has it: groups True (one a node), "many" (four a
+    node, the tree's the third: what the beta gave) or False (none); max_ranks True for no maxRanks (the count only in the
+    entry, or totalMaxRanks)."""
+    trees = "{" + ",".join("{" + ",".join('{ %s, %d, %d, 0, %d }' % (json.dumps(name), row, col, mx) for row, col, mx, name in tree) + "}"
+                           for tree in SITE_WARRIOR) + "}"
+    L.run("TREE = %s; NODES_FROM(%s); NO_MAX = %s; TOTAL = %s; NO_ENTRY = %s; NO_GROUP = %s; FA.Talents.Forget()" % (
+        trees, LIVE_GRID, "true" if max_ranks else "false", "true" if total else "false", "false" if entry else "true",
+        "{ all = true }" if groups is False else "{}"))
+    L.run("MANY_GROUPS = %s" % ("true" if groups == "many" else "false"))
+
+
+def site_node(tab, row, col):
+    return L.eval("function(tab, row, col) for id, n in pairs(NODES) do if n.tab == tab and n.talent[2] == row and n.talent[3] == col then return id end end end")(tab, row, col)
+
+
+class EveryNode(unittest.TestCase):
+    """Issue #1590: the live client's nodes have maxRanks 0 and no groups, and every one is still read and sorted."""
+
+    def setUp(self):
+        L.run("RESET('traits')")
+
+    def check_site(self, counts=(17, 17, 18), max_known=True):
+        """Every talent of the site's warrior is at the cell the site names, with its name and rank count."""
+        self.assertEqual([len(t) for t in SITE_WARRIOR], list(counts))
+        at = L.eval("function(tab, cell) local t = FA.Talents.At(tab, cell); if not t then return nil end return t.name, t.max, t.row, t.col end")
+        for tab, tree in enumerate(SITE_WARRIOR, 1):
+            for row, col, mx, name in tree:
+                self.assertEqual(tuple(at(tab, (row - 1) * 4 + col - 1)), (name, mx if max_known else None, row, col), (tab, row, col, name))
+        view_cells = L.eval("function() local out = {} for tab, cells in ipairs(FA.Talents.View().cells) do local n = 0 for _ in pairs(cells) do n = n + 1 end out[tab] = n end return out[1], out[2], out[3] end")()
+        self.assertEqual(tuple(view_cells), counts)
+        self.assertEqual(L.eval("function() local out = {} for t = 1, 3 do out[t] = #FA.Talents.View().dropped[t] end return table.concat(out, ',') end")(), "0,0,0")
+
+    def test_a_node_with_several_groups_goes_to_the_tree_whose_group_is_among_them(self):
+        # the beta's dump: every node has maxRanks and is visible, but has 3 to 7 groups, the display group not the first
+        live_warrior(groups="many")
+        self.check_site()
+        counts = L.eval("function() local v = FA.Talents.View(); return v.byPosition[1], v.byPosition[2], v.byPosition[3], #v.skipped end")()
+        self.assertEqual(tuple(counts), (0, 0, 0, 0))
+        nodes = list(L.eval("FA.Talents.DumpNodes()").values())
+        self.assertEqual(nodes[1], "node 101 posX 1020 posY 1500 maxRanks 3 totalMaxRanks nil groupIDs 4 [5001 5002 10=Arms 5003] entryIDs 1 isVisible true type 0 subTreeID nil -> tree 1 Arms (group 10)")
+        self.assertEqual(L.eval("FA.Talents.Dump()[#FA.Talents.Dump()]"), "Every talent has a cell of its own.")
+        # a node whose groups name two of the trees takes the first, and /fa debug nodes says so
+        node = site_node(2, 4, 3)   # Enrage
+        L.run("BOTH_TREES[%d] = true; FA.Talents.Forget()" % node)
+        self.check_site()
+        line = [l for l in L.eval("FA.Talents.DumpNodes()").values() if l.startswith("node %d " % node)][0]
+        self.assertIn("groupIDs 2 [20=Fury 30=Protection]", line)
+        self.assertTrue(line.endswith("-> tree 2 Fury (group 20, the first of its groups that is a tree's; group 30 is another tree's too)"), line)
+
+    def test_nodes_with_no_maxranks_and_no_group_read_and_sort(self):
+        live_warrior(max_ranks=True, groups=False)
+        self.check_site()
+        counts = L.eval("function() local v = FA.Talents.View(); return v.byPosition[1], v.byPosition[2], v.byPosition[3], #v.skipped end")()
+        self.assertEqual(tuple(counts), (17, 17, 18, 0))   # every node went by its x
+        lines = list(L.eval("FA.Talents.Dump()").values())
+        self.assertIn("   17 nodes here had no group the game's list knows, so went by position (/fa debug nodes says why)", lines)
+        self.assertEqual(lines[-1], "Every talent has a cell of its own.")
+        self.assertNotIn("didn't sort", L.eval("PRINTED"))
+
+    def test_the_leftmost_node_having_no_group_leaves_its_tree_starting_at_column_1(self):
+        # the nodes that give each tree its first column have no group: Improved Heroic Strike (Arms 1,1), Furious Precision
+        # (Fury 3,1), Improved Bloodrage (Protection 1,1); the rest of the trees keep theirs
+        live_warrior(max_ranks=True)
+        for tab, row, col in ((1, 1, 1), (2, 3, 1), (3, 1, 1)):
+            L.run("NO_GROUP[%d] = true" % site_node(tab, row, col))
+        L.run("FA.Talents.Forget()")
+        self.check_site()
+        self.assertEqual(tuple(L.eval("function() local v = FA.Talents.View(); return v.byPosition[1], v.byPosition[2], v.byPosition[3] end")()), (1, 1, 1))
+        self.assertEqual(L.eval("FA.Talents.View().grid[2].originX"), 5020)   # Fury's column 1, not Cruelty's
+        self.assertEqual(L.eval("FA.Talents.At(2, 2).name"), "Cruelty")             # column 3 in the window: cell 2, not cell 0
+        self.assertEqual(L.eval("FA.Talents.At(2, 8).name"), "Furious Precision")   # row 3, column 1
+
+    def test_a_group_the_trees_list_doesnt_have_goes_by_position(self):
+        live_warrior(max_ranks=True)
+        node = site_node(3, 5, 2)   # Concussion Blow
+        L.run("UNKNOWN_GROUP[%d] = 777; FA.Talents.Forget()" % node)
+        self.check_site()
+        line = [l for l in L.eval("FA.Talents.DumpNodes()").values() if l.startswith("node %d " % node)][0]
+        self.assertIn("-> tree 3 Protection (its group is not one of the tree's, so by x: within 9080 to 10880)", line)
+
+    def test_the_rank_count_comes_from_maxranks_else_totalmaxranks_else_the_entry(self):
+        live_warrior(max_ranks=False)
+        self.check_site()                                   # maxRanks as the docs have it
+        live_warrior(max_ranks=True, total=True, entry=False)
+        self.check_site()                                   # maxRanks 0, totalMaxRanks has it
+        live_warrior(max_ranks=True)
+        self.check_site()                                   # maxRanks 0 and no total: the entry's
+        live_warrior(max_ranks=True, entry=False)
+        self.check_site(max_known=False)                    # no count anywhere: every cell is there, its max unknown
+        lines = list(L.eval("FA.Talents.Dump()").values())
+        self.assertIn("   1,2 (1) Deflection 0/? at 1620,1500, node %d" % site_node(1, 1, 2), lines)
+
+    def test_a_node_the_window_skips_is_left_unread_and_said(self):
+        live_warrior(max_ranks=True, groups=False)
+        node = site_node(3, 7, 2)   # Shield Slam
+        L.run("HIDDEN[%d] = true; FA.Talents.Forget()" % node)
+        self.assertIsNone(L.eval("FA.Talents.At(3, 25)"))
+        self.assertEqual(L.eval("#FA.Talents.View().skipped"), 1)
+        lines = list(L.eval("FA.Talents.Dump()").values())
+        self.assertIn("left unread: node %d at 9680,5100: isVisible is false, which the window skips too" % node, lines)
+        self.assertEqual(lines[-1], "Every talent has a cell of its own.")   # the rest sorts
+        nodes = list(L.eval("FA.Talents.DumpNodes()").values())
+        self.assertTrue(any(n.startswith("node %d " % node) and n.endswith("-> not read: isVisible is false, which the window skips too") for n in nodes))
+
+    def test_every_node_is_split_by_the_widest_gaps_when_none_has_a_group(self):
+        live_warrior(max_ranks=True, groups=False)
+        # Fury's first column is empty in the small tree; here the whole trees are in, and the gaps between trees are the widest
+        why = [l for l in L.eval("FA.Talents.DumpNodes()").values() if l.startswith("node %d " % site_node(2, 1, 3))][0]
+        self.assertTrue(why.endswith("-> tree 2 Fury (no group, and no node has one: split by the widest gaps in x)"), why)
+
+    def test_debug_nodes_prints_every_node_raw(self):
+        live_warrior(max_ranks=True, groups=False)
+        L.run("PRINTED = ''; SlashCmdList.FOREVERARMOURY('debug nodes')")
+        printed = [l.replace("|cffffd100Forever Armoury:|r ", "") for l in L.eval("PRINTED").strip().split("\n")]
+        self.assertEqual(printed[0], "52 nodes in config 7's tree; in groupIDs a tree's group is marked with its name.")
+        node_lines = [l for l in printed if l.startswith("node ")]
+        self.assertEqual(len(node_lines), 52)
+        self.assertEqual(node_lines[0], "node 101 posX 1020 posY 1500 maxRanks 0 totalMaxRanks nil groupIDs 0 entryIDs 1 isVisible true type 0 subTreeID nil"
+                                        " -> tree 1 Arms (no group, and no node has one: split by the widest gaps in x)")
+        self.assertEqual(len({l.split(" ")[1] for l in node_lines}), 52)
+        # with the groups in place it says the group
+        live_warrior(max_ranks=False)
+        first = L.eval("FA.Talents.DumpNodes()[2]")
+        self.assertEqual(first, "node 101 posX 1020 posY 1500 maxRanks 3 totalMaxRanks nil groupIDs 1 [10=Arms] entryIDs 1 isVisible true type 0 subTreeID nil -> tree 1 Arms (group 10)")
+        # and /fa debug stays what it was
+        L.run("PRINTED = ''; SlashCmdList.FOREVERARMOURY('debug')")
+        self.assertIn("1. Arms", L.eval("PRINTED"))
+        self.assertNotIn("posX", L.eval("PRINTED"))
+        self.assertIn("/fa debug nodes", L.eval("(function() PRINTED = ''; SlashCmdList.FOREVERARMOURY('help'); return PRINTED end)()"))
+
+    def test_debug_nodes_before_the_game_answers(self):
+        L.run("API = 'none'")
+        self.assertIn("hasn't given its talents", L.eval("FA.Talents.DumpNodes()[1]"))
+        L.run("RESET('traits')")
+
+    def test_builds_follow_on_the_live_nodes(self):
+        live_warrior(max_ranks=True, groups=False)
+        # Fury 3,1 is cell 8 of tree 2: before, with the leftmost nodes missing, Fury's cells were two columns off
+        plan = L.eval("function() local list = assert(FA.PlanApply({ picks = '1218' })); local out = {} for i, t in ipairs(list) do out[i] = t.name end return table.concat(out, ',') end")()
+        self.assertEqual(plan, "Cruelty,Furious Precision")
+        L.run("PLAYER.level = 60")
+        ok, said = L.eval("function() return FA.Apply({ picks = '1211' }) end")()   # (the game's tiers keep a third-row talent for later)
+        self.assertTrue(ok, said)
+        self.assertEqual(said, "Cruelty, Booming Voice")
+        L.run("FA.Talents.Committed(7)")   # the game says the commit went through
+        # Shield Slam isn't there (the window skips it): the pick is marked, the others carry on
+        node = site_node(3, 7, 2)
+        live_warrior(max_ranks=True, groups=False)
+        L.run("HIDDEN[%d] = true; FA.Talents.Forget()" % node)
+        p = L.eval("function() local p = FA.Progress({ picks = '12' .. '2p' .. '18' }); return #p.unplaced, p.unplaced[1].n, p.unplaced[1].tab, p.unplaced[1].cell, #p.left, p.next.talent.name end")()
+        self.assertEqual(tuple(p), (1, 2, 3, 25, 2, "Cruelty"))
+
+
+class Unplaced(unittest.TestCase):
+    """A pick that doesn't place is marked, not fatal: Progress, the strip's plan and Apply carry on with the rest."""
+
+    def setUp(self):
+        L.run("RESET('traits'); PLAYER.level = 60")
+
+    def progress(self, picks):
+        return L.eval("""function(picks)
+          local p, why = FA.Progress({ picks = picks })
+          if not p then return why end
+          local un, left = {}, {}
+          for i, u in ipairs(p.unplaced) do un[i] = u.n .. '@' .. u.tab .. ':' .. u.cell .. '/' .. u.level end
+          for i, x in ipairs(p.left) do left[i] = x.n end
+          return table.concat(un, ' ') .. '|' .. table.concat(left, ' ') .. '|' .. (p.next and p.next.n or '-') .. '|' .. (p.blocked and p.blocked.n or '-') .. '|' .. p.points .. '|' .. p.off
+        end""")(picks)
+
+    # Arms in the small tree: cell 0 and cell 12 have no talent; Deflection is cell 1, Tactical Mastery cell 4
+    def test_progress_lists_what_it_cant_place_and_keeps_the_rest(self):
+        self.assertEqual(self.progress("01" + "00" + "01" + "0c"), "2@1:0/11 4@1:12/13|1 3|1|2|4|0")
+        self.assertEqual(self.progress("0101"), "|1 2|1|-|2|0")
+
+    def test_several_unplaced_picks_and_taken_points(self):
+        L.run("TREE[1][1][4] = 1; FA.Talents.Forget()")   # Deflection 1/5
+        self.assertEqual(self.progress("00" + "01" + "01" + "1f" + "04"), "1@1:0/10 4@2:15/13|3 5|3|1|5|0")
+        # the unplaced picks don't count as points the character has off the build
+        L.run("TREE[1][2][4] = 1; FA.Talents.Forget()")
+        self.assertEqual(L.eval("FA.Progress({ picks = '0001' }).off"), 1)
+
+    def test_a_pick_of_another_build_number_that_isnt_in_the_trees(self):
+        # a code from a newer client with a talent this one lacks in tree 3: the build still works
+        L.run("FA.AddBuilds(assert(FA.Code.Read('FAT3-70200-warrior-Newer-0101" + "2r" + "0404-0')))")
+        build = L.eval("FA.BuildsFor('warrior')[1]")
+        p = L.eval("function(b) local p = FA.Progress(b); return #p.unplaced, p.unplaced[1].tab, p.unplaced[1].cell, p.next.talent.name end")(build)
+        self.assertEqual(tuple(p), (1, 3, 27, "Deflection"))
+
+    def test_apply_stops_at_the_first_unplaced_pick(self):
+        L.run("PLAYER.level = 14")   # five points
+        plan = L.eval("""function(picks)
+          local list, why, p, stopped = FA.PlanApply({ picks = picks })
+          if not list then return nil, why end
+          local out = {} for i, t in ipairs(list) do out[i] = t.name end
+          return table.concat(out, ','), stopped and (stopped.tab .. ':' .. stopped.cell) or 'none'
+        end""")
+        self.assertEqual(tuple(plan("01" + "01" + "00" + "01" + "0c")), ("Deflection,Deflection", "1:0"))
+        self.assertEqual(tuple(plan("01" + "01")), ("Deflection,Deflection", "none"))       # nothing off the trees: not cut
+        self.assertEqual(tuple(plan("01" + "01" + "00")), ("Deflection,Deflection", "none"))  # nothing after it to be cut
+        text = plan("00" + "01")
+        self.assertEqual(text[0], None)
+        self.assertEqual(text[1], "Apply stops at Arms row 1, column 1, a talent your trees don't have, so there is nothing to spend before it.")
+        ok, said, stopped = L.eval("function() local ok, said, stopped = FA.Apply({ picks = '01010001' }); return ok, said, stopped and stopped.cell end")()
+        self.assertTrue(ok, said)
+        self.assertEqual((said, stopped), ("Deflection x2", 0))
+        self.assertEqual(L.eval("FA.Talents.Spent()"), 2)    # only the two before the pick off the trees
+        self.assertEqual(list(L.eval("LOG").values()), ["buy Deflection", "buy Deflection", "commit"])
+        L.run("FA.Talents.Committed(7)")
+
+    def test_every_pick_placed_is_unchanged(self):
+        ok, said = L.eval("function() return FA.Apply({ picks = '0101' }) end")()    # two answers, not three
+        self.assertEqual((ok, said), (True, "Deflection x2"))
+        L.run("FA.Talents.Committed(7)")
+
+    def test_the_strip_plan_has_the_unplaced_picks_in_their_place(self):
+        L.run("TREE[1][1][4] = 1; FA.Talents.Forget()")
+        plan = L.eval("""function(picks, past, coming)
+          local p = FA.Progress({ picks = picks })
+          local list, more = FA.StripPlan(p, past, coming)
+          local out = {}
+          for i, e in ipairs(list) do out[i] = e.kind .. ':' .. e.n .. (e.talent and '' or ('@' .. e.tab .. ',' .. e.cell)) end
+          return table.concat(out, ' '), more
+        end""")
+        self.assertEqual(tuple(plan("01" + "00" + "01" + "01" + "0c" + "01", 3, 5)), ("taken:1 unplaced:2@1,0 next:3 coming:4 unplaced:5@1,12 coming:6", 0))
+        self.assertEqual(tuple(plan("01" + "00" + "01" + "01" + "0c" + "01", 1, 2)), ("unplaced:2@1,0 next:3 coming:4 unplaced:5@1,12", 1))
+        self.assertEqual(tuple(plan("01" + "01", 3, 5)), ("taken:1 next:2", 0))
+
+
 class Builds(unittest.TestCase):
     def setUp(self):
         L.run("RESET('traits')")
@@ -975,10 +1251,10 @@ class Builds(unittest.TestCase):
         self.assertEqual(L.eval("PRINTED"), "")
         self.assertEqual(L.eval("#FA.BuildsFor('warrior')"), 4)
 
-    def test_a_cell_with_no_talent_is_refused(self):
+    def test_a_cell_with_no_talent_is_marked_not_fatal(self):
         p, why = L.eval("function() local p, why = FA.Progress({ picks = '00' }); return p, why end")()
-        self.assertIsNone(p)
-        self.assertIn("isn't in your talent trees", why)
+        self.assertIsNone(why)
+        self.assertEqual(L.eval("function(p) return #p.unplaced, p.unplaced[1].n, p.unplaced[1].tab, p.unplaced[1].cell, p.blocked == p.unplaced[1], p.points, p.next end")(p), (1, 1, 1, 0, True, 1, None))
 
     def test_extra_names_the_points_the_build_lacks(self):
         L.run("TREE[1][1][4] = 1; TREE[3][1][4] = 2; FA.Talents.Forget()")
@@ -1448,6 +1724,7 @@ frame = function(name)
     if k == "IsShown" then return function(self) return rawget(self, "shown") ~= false end end
     if k == "SetText" then return keep("text") end
     if k == "SetAlpha" then return keep("alpha") end
+    if k == "SetDesaturated" then return keep("desaturated") end
     if k == "SetTexture" then return keep("texture") end
     if k == "SetHeight" then return keep("height") end
     if k == "SetWidth" then return keep("width") end
@@ -2206,6 +2483,108 @@ class UI(unittest.TestCase):
         self.assertIn("Reset your talents at a class trainer", status)
         self.assertEqual(self.panel("apply")[1], False)
 
+    # ---- a pick that doesn't place is marked, not fatal (#1590)
+    OFF = "01" + "00" + "01" + "0c" + "01"   # Deflection, a pick off the trees (Arms 1,1), Deflection, another (Arms 4,1), Deflection
+
+    def follow_off(self, picks=OFF, level=14):
+        L.run("PRINTED = ''; FA.ImportText('FAT1-warrior-Arms-%s'); PLAYER.level = %d; FA.Talents.Forget()" % (picks, level))
+        L.run("local l = FA.BuildsFor('warrior'); FA.SetActive(l[#l].id); FA.Refresh()")
+
+    def test_import_says_once_which_picks_arent_in_the_trees(self):
+        L.run("PRINTED = ''")
+        ok, said = L.eval("function(t) return FA.ImportText(t) end")("FAT1-warrior-Arms-" + self.OFF)
+        self.assertTrue(ok)
+        self.assertIn("1 Warrior build imported. Following Arms. Arms: 2 talents of this build aren't in your trees: "
+                      "Arms row 1, column 1; Arms row 4, column 1. The rest of it works; Apply stops at the first of them.", said)
+        self.assertEqual(L.eval("PRINTED").count("aren't in your trees"), 1)
+        # a build whose picks all place says nothing of it, and one pick is said in the singular
+        L.run("PRINTED = ''")
+        ok, said = L.eval("function(t) return FA.ImportText(t) end")("FAT1-warrior-Fury-0101 FAT1-warrior-Prot-0100")
+        self.assertIn("Prot: 1 talent of this build isn't in your trees: Arms row 1, column 1.", said)
+        self.assertNotIn("Fury: ", said)
+        # a code for another class has no trees here to check
+        L.run("PRINTED = ''")
+        ok, said = L.eval("function(t) return FA.ImportText(t) end")("FAT1-mage-Frost-0001")
+        self.assertNotIn("trees", said)
+
+    def test_the_panel_lights_the_next_placeable_talent_and_names_the_rest(self):
+        self.follow_off()
+        status = self.panel("status")
+        self.assertIn("|cffff6060" + "2 talents of this build aren't in your trees: Arms row 1, column 1; Arms row 4, column 1|r.", status)
+        self.assertIn("Next: |cffffd100Deflection|r 1/5 (Arms), now.", status)
+        self.assertEqual(L.eval("LIT"), L.eval("NODE(1, 1)"))
+        # more than three are counted, three named
+        self.follow_off("00" + "0c" + "0d" + "0e" + "0f" + "01")
+        self.assertIn("5 talents of this build aren't in your trees: Arms row 1, column 1; Arms row 4, column 1; Arms row 4, column 2; and 2 more|r.", self.panel("status"))
+        # every point the trees have taken: the build isn't "spent" while picks wait that can't be placed
+        self.follow_off("0100", 60)
+        L.run("TREE[1][1][4] = 1; FA.Talents.Forget(); FA.Refresh()")
+        self.assertIn("Every point of this build that your trees have is spent.", self.panel("status"))
+        self.assertEqual(self.panel("apply")[1:], (False, "Every point of this build that your trees have is spent."))
+
+    def test_the_strip_shows_an_unplaced_pick_as_a_greyed_question_mark(self):
+        self.follow_off()
+        self.assertEqual(self.strip(), [
+            "next Deflection 1/5|[Now] edge",
+            "unplaced off the trees|@11 a=0.5",
+            "coming Deflection 2/5|@12",
+            "unplaced off the trees|@13 a=0.5",
+            "coming Deflection 3/5|@14"])
+        self.assertEqual(L.eval("ForeverArmouryTalentStrip.icons[2].tex.texture"), "Interface\\Icons\\INV_Misc_QuestionMark")
+        self.assertTrue(L.eval("ForeverArmouryTalentStrip.icons[2].tex.desaturated"))
+        self.assertFalse(L.eval("ForeverArmouryTalentStrip.icons[1].tex.desaturated"))
+        self.assertEqual(L.eval("ForeverArmouryTalentStrip.icons[2].rank.text"), "")
+        # its tooltip names the cell, and a click does nothing
+        tip = self.tip(2)
+        self.assertEqual(L.eval("TIP.text"), "Not in your trees")
+        self.assertEqual(tip[:2], ["Arms row 1, column 1", "Level 11"])
+        self.assertFalse(self.highlighted(2))
+        L.run("PRINTED = ''; LOG = {}")
+        self.click(2)
+        self.click(2, shift=True)
+        self.nothing_happened()
+        self.hover(2, "OnLeave")
+
+    def test_a_talent_with_no_known_rank_count_shows_a_question_mark(self):
+        L.run("NO_MAX = true; NO_ENTRY = true; FA.Talents.Forget()")
+        self.follow_off("0101", 12)
+        self.assertIn("Next: |cffffd100Deflection|r 1/? (Arms), now.", self.panel("status"))
+        self.assertEqual(self.strip(), ["next Deflection 1/?|[Now] edge", "coming Deflection 2/?|@11"])
+        self.assertEqual(self.tip(1)[0], "Level 10 \u00b7 Rank 1 of ?")
+
+    def test_apply_spends_the_placeable_points_and_stops_at_the_first_unplaced(self):
+        self.follow_off("01" + "01" + "00" + "01" + "01", 14)
+        text, enabled, why = self.panel("apply")
+        self.assertEqual((text, enabled), ("Apply 2 points", True))
+        self.assertEqual(why, "Deflection x2\nStops at Arms row 1, column 1, a talent your trees don't have.")
+        L.run("PRINTED = ''; FA.AskApply()")
+        self.assertIn("Spend 2 points as Arms says?\n\nDeflection x2\n\nIt stops at Arms row 1, column 1, a talent your trees don't have.", L.eval("POPUPS[1].text"))
+        L.run("StaticPopupDialogs.FOREVERARMOURY_APPLY.OnAccept(nil, POPUPS[1].data)")
+        self.assertEqual(L.eval("FA.Talents.Spent()"), 2)
+        self.assertEqual(self.said(), "Spent as Arms says: Deflection x2. It stopped at Arms row 1, column 1, a talent your trees don't have.")
+        # the next point is past the pick that can't place: the panel and the strip's click say why there is nothing to spend
+        L.run("EVENT('TRAIT_CONFIG_UPDATED', 7); PRINTED = ''; FA.Refresh()")
+        text, enabled, why = self.panel("apply")
+        self.assertEqual((text, enabled), ("Apply", False))
+        self.assertEqual(why, "Apply stops at Arms row 1, column 1, a talent your trees don't have, so there is nothing to spend before it.")
+        self.assertIn("Next: |cffffd100Deflection|r 3/5", self.panel("status"))
+        i = self.icon("next", "Deflection", "3/5")
+        self.assertEqual(self.tip(i)[-1], why)
+        self.assertFalse(self.highlighted(i))
+        L.run("LOG = {}")
+        self.click(i)
+        self.assertEqual(self.said(), "")
+        self.assertEqual(self.trace(), [])
+
+    def test_a_strip_click_takes_the_point_before_the_unplaced_one(self):
+        self.follow_off()
+        L.run("EVENT('TRAIT_CONFIG_UPDATED', 7); PRINTED = ''; LOG = {}")
+        i = self.icon("next", "Deflection", "1/5")
+        self.assertTrue(self.highlighted(i))
+        self.assertEqual(self.tip(i)[-1], "Click to take it")   # the one point before the pick off the trees: no "take all"
+        self.click(i)
+        self.assertEqual(self.said(), "Spent as Arms says: Deflection.")   # one point asked for, one before the pick off the trees
+
     # ---- the strip of icons beside the talent window (#1562) and its hover (#1563)
     def strip(self):
         """What the strip shows, an icon a line: kind, talent and rank, then | and its level badge (@), label under it ([]), check (v), gold border and alpha."""
@@ -2220,7 +2599,7 @@ class UI(unittest.TestCase):
               if ic.check.shown then decor[#decor + 1] = 'v' end
               if ic.edge.shown then decor[#decor + 1] = 'edge' end
               if ic.tex.alpha ~= 1 then decor[#decor + 1] = 'a=' .. ic.tex.alpha end
-              out[#out + 1] = e.kind .. ' ' .. e.talent.name .. (rank ~= '' and (' ' .. rank) or '') .. '|' .. table.concat(decor, ' ')
+              out[#out + 1] = e.kind .. ' ' .. (e.talent and e.talent.name or 'off the trees') .. (rank ~= '' and (' ' .. rank) or '') .. '|' .. table.concat(decor, ' ')
             end
           end
           return table.concat(out, '\\n')

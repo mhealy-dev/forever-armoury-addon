@@ -80,8 +80,9 @@ local STRIP_BACKDROP = { bgFile = BACKDROP.bgFile, edgeFile = BACKDROP.edgeFile,
 --[[ Spends a build's due points (the first `count` of them, else all): the points, all or none (FA.Apply), then a line in
      chat and a redraw. The confirm's Spend and the strip's click both come here. ]]
 local function spend(build, count)
-  local ok, said = FA.Apply(build, count)
-  FA.Print(ok and ("Spent as " .. (build.name ~= "" and FA.Esc(build.name) or "the build") .. " says: " .. said .. ".") or said)
+  local ok, said, stopped = FA.Apply(build, count)
+  FA.Print(ok and ("Spent as " .. (build.name ~= "" and FA.Esc(build.name) or "the build") .. " says: " .. said .. "." ..
+    (stopped and (" It stopped at " .. FA.Where(stopped.tab, stopped.cell) .. ", a talent your trees don't have.") or "")) or said)
   FA.Refresh()
 end
 
@@ -108,6 +109,14 @@ local function showTip(icon)
   if not e then return end
   local t = e.talent
   GameTooltip:SetOwner(icon, "ANCHOR_RIGHT")
+  if not t then
+    GameTooltip:SetText("Not in your trees", 1, 1, 1)
+    GameTooltip:AddLine(FA.Where(e.tab, e.cell), 1, 0.82, 0)
+    GameTooltip:AddLine("Level " .. e.level, 1, 0.82, 0)
+    GameTooltip:AddLine("The site may be newer than this addon, or the game's nodes didn't sort. Apply stops here.", 1, 0.4, 0.4, true)
+    GameTooltip:Show()
+    return
+  end
   if t.spell then GameTooltip:SetSpellByID(t.spell) else GameTooltip:SetText(t.name or "Unknown talent", 1, 1, 1) end
   GameTooltip:AddLine("Level " .. e.level .. " \194\183 Rank " .. e.rank .. " of " .. (t.max or "?"), 1, 0.82, 0)
   if e.kind == "taken" then GameTooltip:AddLine("Taken", 0.3, 1, 0.3) end
@@ -233,15 +242,17 @@ local function refreshStrip(p)
     if not icon then icon = makeIcon(); strip.icons[i] = icon end
     local t = e.talent
     icon.entry = e
-    icon.tex:SetTexture(Talents.Icon(t))
-    icon.tex:SetAlpha(e.kind == "taken" and 0.45 or 1)
+    icon.tex:SetTexture(Talents.Icon(t))   -- a pick off the trees has no talent: a question mark, greyed
+    icon.tex:SetAlpha(e.kind == "taken" and 0.45 or e.kind == "unplaced" and 0.5 or 1)
+    if icon.tex.SetDesaturated then icon.tex:SetDesaturated(e.kind == "unplaced") end
     icon.check:SetShown(e.kind == "taken")
     icon.edge:SetShown(e.kind == "next")
     icon.glow:SetShown(e.kind == "next")
-    icon.rank:SetText((t.max or 1) > 1 and (e.rank .. "/" .. t.max) or "")
-    icon.levelBg:SetShown(e.kind == "coming")
-    icon.level:SetShown(e.kind == "coming")
-    icon.level:SetText(e.kind == "coming" and e.level or "")
+    icon.rank:SetText(t and (t.max == nil or t.max > 1) and (e.rank .. "/" .. (t.max or "?")) or "")
+    local levelled = e.kind == "coming" or e.kind == "unplaced"
+    icon.levelBg:SetShown(levelled)
+    icon.level:SetShown(levelled)
+    icon.level:SetText(levelled and e.level or "")
     icon.label:SetShown(e.kind == "next")
     icon.label:SetText(e.kind == "next" and (e.now and "Now" or ("L" .. e.level)) or "")
     clickPlan(icon)
@@ -411,11 +422,15 @@ function FA.AskApply()
   local build = FA.ActiveBuild()
   if not build then FA.Print("Pick a build to follow first."); return end
   local ok, why = FA.Talents.CanChange()
-  local list
-  if ok then list, why = FA.PlanApply(build) end
+  local list, stopped
+  if ok then
+    local answer = { FA.PlanApply(build) }
+    list, why, stopped = answer[1], answer[2], answer[4]
+  end
   if not list then FA.Print(why); return end
   StaticPopup_Show("FOREVERARMOURY_APPLY", "Spend " .. #list .. (#list == 1 and " point" or " points") .. " as " ..
-    (build.name ~= "" and FA.Esc(build.name) or "the build") .. " says?\n\n" .. FA.Summary(list, 8), nil, { id = build.id })
+    (build.name ~= "" and FA.Esc(build.name) or "the build") .. " says?\n\n" .. FA.Summary(list, 8) ..
+    (stopped and ("\n\nIt stops at " .. FA.Where(stopped.tab, stopped.cell) .. ", a talent your trees don't have.") or ""), nil, { id = build.id })
 end
 
 --[[ What the panel says about the active build: its next point, or why there isn't one, and what it takes to swap. ]]
@@ -423,6 +438,8 @@ local function statusText(build, p, why)
   if not build then return "Pick a build to follow. Its next talent lights up in the trees." end
   if not p then return why end
   local lines = {}
+  local unplaced = FA.UnplacedText(p.unplaced)
+  if unplaced then lines[1] = "|cffff6060" .. unplaced .. "|r." end
   if p.off > 0 then
     local names = {}
     for i, x in ipairs(p.extra) do if i <= 3 then names[#names + 1] = (x.talent.name or "?") .. (x.over > 1 and (" x" .. x.over) or "") end end
@@ -437,7 +454,7 @@ local function statusText(build, p, why)
     lines[#lines + 1] = "Next: |cffffd100" .. (p.next.talent.name or "?") .. "|r " .. p.next.rank .. "/" .. (p.next.talent.max or "?") ..
       (tree and (" (" .. tree.name .. ")") or "") .. ", " .. when .. "."
   else
-    lines[#lines + 1] = "Every point of this build is spent."
+    lines[#lines + 1] = p.blocked and "Every point of this build that your trees have is spent." or "Every point of this build is spent."
   end
   return table.concat(lines, "\n")
 end
@@ -499,14 +516,18 @@ function FA.Refresh()
   lightTalent(p and p.next and p.next.talent or nil)
   refreshStrip(p)
   --[[ Apply says how many points it would spend, or why it can't, before it's pressed. ]]
-  local plan
+  local plan, stopped
   if not active then why = "Pick a build to follow first."
   else
     local can, combat = Talents.CanChange()
-    if can then plan, why = FA.PlanApply(active) else why = combat end
+    if can then
+      local answer = { FA.PlanApply(active) }   -- list, why, progress, the pick that stopped it
+      plan, why, stopped = answer[1], answer[2], answer[4]
+    else why = combat end
   end
   if plan then
-    panel.apply:Enable(); panel.apply:SetText("Apply " .. #plan .. (#plan == 1 and " point" or " points")); panel.apply.why = FA.Summary(plan, 8)
+    panel.apply:Enable(); panel.apply:SetText("Apply " .. #plan .. (#plan == 1 and " point" or " points")); panel.apply.why = FA.Summary(plan, 8) ..
+      (stopped and ("\nStops at " .. FA.Where(stopped.tab, stopped.cell) .. ", a talent your trees don't have.") or "")
   else
     panel.apply:Disable(); panel.apply:SetText("Apply"); panel.apply.why = why
   end
@@ -637,6 +658,19 @@ function FA.ImportText(text)
     if mine > 0 and not FA.ActiveBuild() then
       local list = FA.BuildsFor(FA.class)
       if #list == 1 then FA.SetActive(list[1].id); said = said .. " Following " .. FA.ShownName(list[1]) .. "." end
+    end
+    --[[ A build with picks off the character's trees is said so now, once per build, so the player knows before opening the
+         window; the panel's status says it for as long as the build is followed ]]
+    for _, b in ipairs(builds) do
+      if b.cls == FA.class then
+        local view, saved = FA.Talents.View(), nil
+        for _, old in ipairs(FA.BuildsFor(FA.class)) do if old.name == b.name and old.picks == b.picks then saved = old end end
+        local p = view and saved and FA.Progress(saved, view)
+        local unplaced = p and FA.UnplacedText(p.unplaced)
+        if unplaced then
+          said = said .. " " .. FA.ShownName(saved) .. ": " .. unplaced .. ". The rest of it works; Apply stops at the first of them."
+        end
+      end
     end
   end
   if routes then
