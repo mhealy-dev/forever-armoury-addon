@@ -11,13 +11,17 @@ local Gear = FA.Gear
 local BACKDROP = { bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background", edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
   tile = true, tileSize = 32, edgeSize = 32, insets = { left = 11, right = 12, top = 12, bottom = 11 } }
 local TEMPLATE = BackdropTemplateMixin and "BackdropTemplate" or nil
-local ROWS, ROW_HEIGHT = 12, 32
+local ROWS, ROW_HEIGHT = 12, 32   -- ROWS: the rows the fixed height holds, when there is no character window to follow
 local STATUS_HEIGHT = 52   -- the status text's four lines of small type
 local ROWS_TOP = 122      -- under the status and the buttons
 local SLOT_NAMES = { head = "Head", neck = "Neck", shoulder = "Shoulder", back = "Back", chest = "Chest", wrist = "Wrist", hands = "Hands",
   waist = "Waist", legs = "Legs", feet = "Feet", finger1 = "Ring", finger2 = "Ring", trinket1 = "Trinket", trinket2 = "Trinket",
   mainhand = "Main hand", offhand = "Off hand", ranged = "Ranged" }
+local ROWS_BOTTOM = 20      -- the margin under the last row
+local TOP_INSET = 12        -- how far under the window's top the panel hangs
+local MORE = "\226\139\174"   -- the vertical ellipsis, as UTF-8 bytes
 local panel, hooked, events
+local entries, offset = {}, 0   -- the route's pieces in order: { piece, state, dim }; how many are scrolled off the top
 
 --[[ The game's link for an item, or grey "item <id>" while the game hasn't loaded it (asked to; GET_ITEM_INFO_RECEIVED
      redraws). The link comes with its quality's colour. ]]
@@ -121,11 +125,70 @@ local function clickRow(row)
   if IsModifiedClick("CHATLINK") and ChatEdit_InsertLink then ChatEdit_InsertLink(row.link) end
 end
 
+--[[ Row i, made when the panel first has room for it: the panel makes only as many as fit its height. ]]
+local function makeRow(i)
+  local row = CreateFrame("Button", nil, panel)
+  row:SetSize(268, ROW_HEIGHT - 2)
+  row:SetPoint("TOPLEFT", 16, -ROWS_TOP - (i - 1) * ROW_HEIGHT)
+  row:EnableMouse(true)
+  row:RegisterForClicks("LeftButtonUp")
+  row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+  row:GetHighlightTexture():SetBlendMode("ADD")
+  row.slot = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  row.slot:SetPoint("TOPLEFT", 4, -2)
+  row.slot:SetWidth(62)
+  row.slot:SetJustifyH("LEFT")
+  row.item = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+  row.item:SetPoint("TOPLEFT", 68, -1)
+  row.item:SetPoint("TOPRIGHT", -46, -1)
+  row.item:SetJustifyH("LEFT")
+  row.item:SetWordWrap(false)
+  row.state = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  row.state:SetPoint("TOPRIGHT", -4, -2)
+  row.state:SetWidth(44)
+  row.state:SetJustifyH("RIGHT")
+  row.from = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  row.from:SetPoint("BOTTOMLEFT", 68, 2)
+  row.mark = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")   -- the vertical ellipsis, with "N more" when pieces lie below
+  row.mark:SetPoint("BOTTOMRIGHT", -4, 2)
+  row.mark:SetJustifyH("RIGHT")
+  row.from:SetPoint("BOTTOMRIGHT", row.mark, "BOTTOMLEFT", -4, 0)
+  row.from:SetJustifyH("LEFT")
+  row.from:SetWordWrap(false)
+  row.from:SetTextColor(0.7, 0.7, 0.7)
+  row:SetScript("OnEnter", showTooltip)
+  row:SetScript("OnLeave", hideTooltip)
+  row:SetScript("OnHide", function(self) if GameTooltip.IsOwned and GameTooltip:IsOwned(self) then hideTooltip() end end)
+  row:SetScript("OnClick", clickRow)
+  return row
+end
+
+--[[ The panel's height: the character window's less the gap at its top, which the two anchors give it, and the fixed height
+     when there is no window or it gives none. The window's height is read with a guard (the live client has thrown). ]]
+local FIXED_HEIGHT = ROWS_TOP + ROWS * ROW_HEIGHT + ROWS_BOTTOM
+
+local function heightOf()
+  if not CharacterFrame then return FIXED_HEIGHT end
+  local ok, height = pcall(function() return CharacterFrame:GetHeight() end)
+  height = ok and type(height) == "number" and height - TOP_INSET or 0
+  return height > 0 and height or FIXED_HEIGHT
+end
+
+--[[ How many rows fit between ROWS_TOP and the bottom margin, one at least. ]]
+local function rowsFit(height)
+  return math.max(1, math.floor((height - ROWS_TOP - ROWS_BOTTOM) / ROW_HEIGHT))
+end
+
 local function makePanel()
   local window = CharacterFrame or UIParent
   panel = CreateFrame("Frame", "ForeverArmouryGearPanel", window, TEMPLATE)
-  panel:SetSize(300, ROWS_TOP + ROWS * ROW_HEIGHT + 20)
-  if CharacterFrame then panel:SetPoint("TOPLEFT", window, "TOPRIGHT", -2, -12) else panel:SetPoint("CENTER") end
+  panel:SetSize(300, heightOf())
+  if CharacterFrame then
+    panel:SetPoint("TOPLEFT", window, "TOPRIGHT", -2, -TOP_INSET)
+    panel:SetPoint("BOTTOMLEFT", window, "BOTTOMRIGHT", -2, 0)
+  else
+    panel:SetPoint("CENTER")
+  end
   panel:SetBackdrop(BACKDROP)
   panel:SetFrameStrata("HIGH")
   panel:SetClampedToScreen(true)
@@ -161,39 +224,13 @@ local function makePanel()
   import:SetScript("OnClick", function() FA.OpenImport() end)
 
   panel.rows = {}
-  for i = 1, ROWS do
-    local row = CreateFrame("Button", nil, panel)
-    row:SetSize(268, ROW_HEIGHT - 2)
-    row:SetPoint("TOPLEFT", 16, -ROWS_TOP - (i - 1) * ROW_HEIGHT)
-    row:EnableMouse(true)
-    row:RegisterForClicks("LeftButtonUp")
-    row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
-    row:GetHighlightTexture():SetBlendMode("ADD")
-    row.slot = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    row.slot:SetPoint("TOPLEFT", 4, -2)
-    row.slot:SetWidth(62)
-    row.slot:SetJustifyH("LEFT")
-    row.item = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    row.item:SetPoint("TOPLEFT", 68, -1)
-    row.item:SetPoint("TOPRIGHT", -46, -1)
-    row.item:SetJustifyH("LEFT")
-    row.item:SetWordWrap(false)
-    row.state = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    row.state:SetPoint("TOPRIGHT", -4, -2)
-    row.state:SetWidth(44)
-    row.state:SetJustifyH("RIGHT")
-    row.from = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    row.from:SetPoint("BOTTOMLEFT", 68, 2)
-    row.from:SetPoint("BOTTOMRIGHT", -4, 2)
-    row.from:SetJustifyH("LEFT")
-    row.from:SetWordWrap(false)
-    row.from:SetTextColor(0.7, 0.7, 0.7)
-    row:SetScript("OnEnter", showTooltip)
-    row:SetScript("OnLeave", hideTooltip)
-    row:SetScript("OnHide", function(self) if GameTooltip.IsOwned and GameTooltip:IsOwned(self) then hideTooltip() end end)
-    row:SetScript("OnClick", clickRow)
-    panel.rows[i] = row
-  end
+  panel:EnableMouseWheel(true)
+  panel:SetScript("OnMouseWheel", function(_, delta) FA.ScrollGear(delta > 0 and -1 or 1) end)
+  panel:SetScript("OnSizeChanged", function(_, _, height)
+    if type(height) ~= "number" then height = heightOf() end
+    if rowsFit(height) ~= panel.fit then panel.fit = rowsFit(height); FA.DrawGear() end
+  end)
+  panel.fit = rowsFit(heightOf())
 end
 
 --[[ The spec button: from the build's spec to the first tree, then the next, and after the third back to the build's. ]]
@@ -216,9 +253,38 @@ local function fillRow(row, piece, state, dim)
   row:Show()
 end
 
---[[ Hides the rows after the first n: a row that stays is not hidden and shown again, so a tooltip over it stays. ]]
-local function hideRowsAfter(n)
-  for i = n + 1, ROWS do panel.rows[i]:Hide() end
+--[[ The pieces from offset on, in the rows that fit; the first row says (with the ellipsis) that pieces lie above it, and the
+     last that N lie below. The offset is kept in range. A row that stays is not hidden and shown again, so a tooltip over it
+     stays; the rows past the fit are hidden, and rows are made as the fit first needs them. ]]
+function FA.DrawGear()
+  if not panel then return end
+  local fit = panel.fit
+  offset = math.max(0, math.min(offset, #entries - fit))
+  for i = 1, fit do
+    local e = entries[offset + i]
+    if e then
+      panel.rows[i] = panel.rows[i] or makeRow(i)
+      local row = panel.rows[i]
+      fillRow(row, e[1], e[2], e[3])
+      local below = #entries - (offset + fit)
+      row.mark:SetText(i == fit and below > 0 and (MORE .. " " .. below .. " more") or (i == 1 and offset > 0 and MORE or ""))
+    end
+  end
+  for i = (math.min(#entries - offset, fit)) + 1, #panel.rows do
+    local row = panel.rows[i]
+    row.piece = false
+    row:Hide()
+  end
+end
+
+--[[ The list moved by some pieces, up (negative) or down, as far as it goes. ]]
+function FA.ScrollGear(by)
+  if not panel then return end
+  local before = offset
+  offset = math.max(0, math.min(offset + by, #entries - panel.fit))
+  if offset == before then return end
+  FA.DrawGear()
+  if hovered and hovered:IsShown() then showTooltip(hovered) end   -- the cursor is over another piece now
 end
 
 function FA.RefreshGear()
@@ -227,7 +293,9 @@ function FA.RefreshGear()
   FA.SyncWindowButton("gear")
   if not FA.PanelWanted("gear") or (window and not window:IsShown()) then panel:Hide(); return end
   panel:Show()
-  for _, row in ipairs(panel.rows) do row.piece = false end
+  panel:SetHeight(heightOf())   -- the anchors decide it in the game; this is for a client that hasn't laid them out yet
+  panel.fit = rowsFit(heightOf())
+  entries = {}
   local spec, how = Gear.Spec()
   if spec ~= nil then
     panel.spec:SetText((how == "chosen" and "Spec: " or "Build: ") .. Gear.SpecName(spec))
@@ -235,7 +303,7 @@ function FA.RefreshGear()
     panel.spec:SetText("Pick a spec")
   end
   local route, from = Gear.Route()
-  if not route then panel.status:SetText(from); hideRowsAfter(0); return end
+  if not route then panel.status:SetText(from); FA.DrawGear(); return end
   local level = UnitLevel("player") or 1
   local plan = Gear.Plan(route, level)
   local side = route.side:sub(1, 1):upper() .. route.side:sub(2)
@@ -246,18 +314,9 @@ function FA.RefreshGear()
   elseif #plan.get == 0 then lines[#lines + 1] = "Nothing to get at this level. Coming next:"
   else lines[#lines + 1] = "To get now, then what's coming:" end
   panel.status:SetText(table.concat(lines, "\n"))
-  local n = 0
-  for _, p in ipairs(plan.get) do
-    n = n + 1
-    if n > ROWS then break end
-    fillRow(panel.rows[n], p, "|cffff8080get|r", false)
-  end
-  for _, p in ipairs(plan.coming) do
-    n = n + 1
-    if n > ROWS then break end
-    fillRow(panel.rows[n], p, "at " .. p.level, true)
-  end
-  hideRowsAfter(n)
+  for _, p in ipairs(plan.get) do entries[#entries + 1] = { p, "|cffff8080get|r", false } end
+  for _, p in ipairs(plan.coming) do entries[#entries + 1] = { p, "at " .. p.level, true } end
+  FA.DrawGear()
 end
 
 --[[ The panel on the character window, redrawn as it shows and hides and as the character's gear, bags and level

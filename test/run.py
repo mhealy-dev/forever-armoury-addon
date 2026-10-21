@@ -4011,6 +4011,112 @@ class UI(unittest.TestCase):
         L.run("CharacterFrame.IsShown = nil; FA.RefreshGear()")
         self.assertTrue(L.eval("ForeverArmouryGearPanel.shown"))
 
+    # ---- the panel's height and its scrolling list (forever-armoury#1606)
+    def tall(self, window_height, pieces=12):
+        """The character window `window_height` tall (nil: it gives none) and a route of `pieces` pieces, 3 to get and the rest
+        coming; the panel redrawn. Put back when the test ends."""
+        L.run("SAVED_PLAN = SAVED_PLAN or FA.Gear.Plan; FA.Gear.SetSpec(0); PLAYER.level = 14; "
+              "FA.Gear.Plan = function(route) local get, coming = {}, {} "
+              "for i = 1, %d do (i <= 3 and get or coming)[#(i <= 3 and get or coming) + 1] = route.pieces[i] end "
+              "return { get = get, coming = coming, worn = %d, had = 0 } end" % (pieces, pieces))
+        L.run("CharacterFrame.GetHeight = function() return %s end; FA.RefreshGear()" % (window_height if window_height else "nil"))
+
+        def put_back():
+            L.run("FA.Gear.Plan = SAVED_PLAN or FA.Gear.Plan; SAVED_PLAN = nil; CharacterFrame.GetHeight = nil; FA.ScrollGear(-100); FA.RefreshGear()")
+        self.addCleanup(put_back)
+
+    def shown_rows(self):
+        """The shown rows of the gear panel, top to bottom, as (item id, mark)."""
+        return [tuple(r.values()) for r in L.eval(
+            "function() local out = {} for i, r in ipairs(ForeverArmouryGearPanel.rows) do "
+            "if r.shown then out[#out + 1] = { r.piece.id, r.mark.text } end end return out end")(
+        ).values()]
+
+    ROW = 32
+    TOP = 122
+    MORE = "\u22ee"
+
+    def test_the_gear_panel_ends_where_the_character_window_does(self):
+        points = L.eval("function() local out = {} for i, p in ipairs(ForeverArmouryGearPanel.points) do "
+                        "out[i] = p[1] .. ' ' .. p[3] .. ' ' .. p[4] .. ' ' .. p[5] end return out end")()
+        self.assertEqual(list(points.values()), ["TOPLEFT TOPRIGHT -2 -12", "BOTTOMLEFT BOTTOMRIGHT -2 0"])
+        self.assertTrue(L.eval("ForeverArmouryGearPanel.points[2][2] == CharacterFrame"))
+        # no height from the window: today's fixed size, 12 rows
+        self.tall(None)
+        self.assertEqual(L.eval("ForeverArmouryGearPanel.height"), self.TOP + 12 * self.ROW + 20)
+        self.assertEqual(len(self.shown_rows()), 12)
+        # a height: the panel's is the window's less the 12 the panel hangs under its top
+        L.run("CharacterFrame.GetHeight = function() return 442 end; FA.RefreshGear()")
+        self.assertEqual(L.eval("ForeverArmouryGearPanel.height"), 430)
+        # a window that throws or answers with something else keeps the fixed size
+        L.run("CharacterFrame.GetHeight = function() error('no height') end; FA.RefreshGear()")
+        self.assertEqual(L.eval("ForeverArmouryGearPanel.height"), self.TOP + 12 * self.ROW + 20)
+
+    def test_the_rows_that_fit_follow_the_panels_height(self):
+        self.tall(None)
+        for window, rows in [(442, 9), (self.TOP + 12 + 20 + 32 * 5 - 1, 4), (self.TOP + 12 + 20 + 32 * 5, 5), (100, 1), (12, 12)]:
+            L.run("CharacterFrame.GetHeight = function() return %d end; FA.RefreshGear()" % window)
+            self.assertEqual(len(self.shown_rows()), rows, window)
+        # the game resizes the panel: OnSizeChanged fits the rows to its new height, up and down, and never to none
+        L.run("CharacterFrame.GetHeight = nil; FA.RefreshGear()")
+        resize = L.eval("function(h) local p = ForeverArmouryGearPanel; p.scripts.OnSizeChanged(p, 300, h) end")
+        for height, rows in [(self.TOP + 20 + 32 * 10, 10), (self.TOP + 20 + 32 * 3, 3), (0, 1), (self.TOP + 20 + 32 * 12, 12)]:
+            resize(height)
+            self.assertEqual(len(self.shown_rows()), rows, height)
+        L.run("local p = ForeverArmouryGearPanel; p.scripts.OnSizeChanged(p, 300, nil)")   # a client that gives none
+        self.assertEqual(len(self.shown_rows()), 12)
+        # a row hidden by a smaller panel comes back with its piece
+        resize(self.TOP + 20 + 32 * 2)
+        resize(self.TOP + 20 + 32 * 4)
+        self.assertEqual(len(self.shown_rows()), 4)
+
+    def test_a_route_longer_than_the_rows_scrolls_by_the_wheel_with_markers(self):
+        self.tall(self.TOP + 20 + 12 + 32 * 10)   # ten rows
+        ids = L.eval("function() local r = FA.Gear.Route(); local out = {} for i = 1, 12 do out[i] = r.pieces[i].id end return out end")()
+        ids = list(ids.values())
+        rows = self.shown_rows()
+        self.assertEqual([r[0] for r in rows], ids[:10])
+        self.assertEqual([r[1] for r in rows], [""] * 9 + [self.MORE + " 2 more"])   # the pieces to get stay first, 2 below
+        wheel = L.eval("function(d) local p = ForeverArmouryGearPanel; p.scripts.OnMouseWheel(p, d) end")
+        wheel(-1)   # down by one row
+        rows = self.shown_rows()
+        self.assertEqual([r[0] for r in rows], ids[1:11])
+        self.assertEqual([r[1] for r in rows], [self.MORE] + [""] * 8 + [self.MORE + " 1 more"])
+        wheel(-1)
+        rows = self.shown_rows()
+        self.assertEqual([r[0] for r in rows], ids[2:12])   # the last two are there
+        self.assertEqual([r[1] for r in rows], [self.MORE] + [""] * 9)
+        wheel(-1)   # kept in range
+        self.assertEqual([r[0] for r in self.shown_rows()], ids[2:12])
+        wheel(1)    # and back
+        self.assertEqual([r[0] for r in self.shown_rows()], ids[1:11])
+        wheel(1); wheel(1)
+        rows = self.shown_rows()
+        self.assertEqual([r[0] for r in rows], ids[:10])
+        self.assertEqual(rows[0][1], "")   # nothing above: no marker
+        # a panel that grows takes the offset back in range
+        wheel(-1); wheel(-1)
+        L.run("local p = ForeverArmouryGearPanel; p.scripts.OnSizeChanged(p, 300, %d)" % (self.TOP + 20 + 32 * 12))
+        rows = self.shown_rows()
+        self.assertEqual([r[0] for r in rows], ids)
+        self.assertEqual([r[1] for r in rows], [""] * 12)
+
+    def test_a_route_that_fits_shows_no_markers_and_the_wheel_does_nothing(self):
+        self.tall(None, pieces=7)
+        rows = self.shown_rows()
+        self.assertEqual(len(rows), 7)
+        self.assertEqual([r[1] for r in rows], [""] * 7)
+        L.run("ForeverArmouryGearPanel.scripts.OnMouseWheel(ForeverArmouryGearPanel, -1)")
+        self.assertEqual(self.shown_rows(), rows)
+        # exactly as many as rows fit: still no marker
+        self.tall(self.TOP + 20 + 12 + 32 * 7, pieces=7)
+        self.assertEqual([r[1] for r in self.shown_rows()], [""] * 7)
+
+    def test_one_row_that_has_pieces_above_and_below_says_how_many_below(self):
+        self.tall(100)
+        L.run("ForeverArmouryGearPanel.scripts.OnMouseWheel(ForeverArmouryGearPanel, -1)")
+        self.assertEqual([r[1] for r in self.shown_rows()], [self.MORE + " 10 more"])
+
     # ---- hovering a piece (forever-armoury#1592)
     def piece_row(self, text):
         """The gear panel's row whose item text has `text`."""
