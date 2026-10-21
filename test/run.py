@@ -3784,28 +3784,11 @@ class UI(unittest.TestCase):
         self.assertEqual((apply, enabled, why, plans, perks), ("Apply", False, "Pick a plan to follow first.", "", ""))
         self.assertEqual(L.eval("ForeverArmouryLegacyPanel.plansHeader.text.text"), "Plans (0)")
         # it sits beside the Legacy window
-        self.assertTrue(L.eval("ForeverArmouryLegacyPanel.points[1][2] == LegacySystemFrame"))
-        self.assertEqual(L.eval("ForeverArmouryLegacyPanel.points[1][3]"), "TOPRIGHT")
-        # on its edge, under the window's side tabs: the trees tab's bottom is 300 below the window's top here
+        self.assertTrue(L.eval("ForeverArmouryLegacyPanel.points[1][2] == LegacySystemFrame.LegacyTreeTab"))
+        self.assertEqual(L.eval("ForeverArmouryLegacyPanel.points[1][3]"), "BOTTOMLEFT")
+        # hanging right under the window's lowest side tab, on its edge
         self.assertEqual(L.eval("ForeverArmouryLegacyPanel.points[1][4]"), -2)
-        self.assertEqual(L.eval("ForeverArmouryLegacyPanel.points[1][5]"), -304)
-
-    def test_the_tabs_end_is_read_safely(self):
-        # the game's answer as the mock gives it: 1000 - 700 + 4
-        self.assertEqual(L.eval("FA.LegacyTabsEnd()"), 304)
-        # an answer that isn't a number (a secret value, say) gives the fallback, quietly
-        L.run("PRINTED = ''; local keep = LegacySystemFrame.GetTop; LegacySystemFrame.GetTop = function() return {} end; GOT = FA.LegacyTabsEnd(); LegacySystemFrame.GetTop = keep")
-        self.assertEqual(L.eval("GOT"), 284)
-        self.assertEqual(L.eval("PRINTED"), "")
-        # a read that errors gives the fallback and says so, and the panel is still made (it was, in setUpClass)
-        L.run("PRINTED = ''; local keep = LegacySystemFrame.LegacyTreeTab.GetBottom; LegacySystemFrame.LegacyTreeTab.GetBottom = function() error('no rect') end; GOT = FA.LegacyTabsEnd(); LegacySystemFrame.LegacyTreeTab.GetBottom = keep")
-        self.assertEqual(L.eval("GOT"), 284)
-        self.assertIn("Couldn't read where the Legacy window's tabs end", L.eval("PRINTED"))
-        self.assertIn("no rect", L.eval("PRINTED"))
-        # no tab at all: the fallback, quietly
-        L.run("PRINTED = ''; local keep = LegacySystemFrame.LegacyTreeTab; LegacySystemFrame.LegacyTreeTab = nil; GOT = FA.LegacyTabsEnd(); LegacySystemFrame.LegacyTreeTab = keep")
-        self.assertEqual(L.eval("GOT"), 284)
-        self.assertEqual(L.eval("PRINTED"), "")
+        self.assertEqual(L.eval("ForeverArmouryLegacyPanel.points[1][5]"), -4)
 
     def test_import_follow_light_and_apply_a_legacy_plan(self):
         L.run("LEGACY_ON = true")
@@ -4066,19 +4049,19 @@ class UI(unittest.TestCase):
                       ["coming Gourmand %d/3|@Res" % n for n in range(1, 4)] + ["coming The Quick and the Dead 1/2|@Res"])
 
     def test_the_legacy_strip_shows_the_plans_ranks_in_the_buying_order(self):
-        self.assertFalse(L.eval("ForeverArmouryLegacyStrip.shown"))   # no plan: no strip, and the panel against the window
-        self.assertTrue(L.eval("ForeverArmouryLegacyPanel.points[1][2] == LegacySystemFrame"))
+        self.assertFalse(L.eval("ForeverArmouryLegacyStrip.shown"))   # no plan: no strip, and the panel under the window's tab
+        self.assertTrue(L.eval("ForeverArmouryLegacyPanel.points[1][2] == LegacySystemFrame.LegacyTreeTab"))
         self.follow_legacy()
         self.assertTrue(L.eval("ForeverArmouryLegacyStrip.shown"))
         self.assertEqual(self.lstrip(), self.GATHERER_STRIP)
         self.assertEqual(len(self.lstrip()), 16)
         self.assertEqual(L.eval("ForeverArmouryLegacyStrip.more.shown"), False)
-        # it hangs on the window's right edge under the side tabs, a strip's width wide; the panel against the strip
+        # it hangs right under the window's lowest side tab, a strip's width wide; the panel against the strip
         self.assertEqual(L.eval("ForeverArmouryLegacyStrip.width"), 58)
-        self.assertTrue(L.eval("ForeverArmouryLegacyStrip.points[1][2] == LegacySystemFrame"))
-        self.assertEqual(L.eval("ForeverArmouryLegacyStrip.points[1][3]"), "TOPRIGHT")
+        self.assertTrue(L.eval("ForeverArmouryLegacyStrip.points[1][2] == LegacySystemFrame.LegacyTreeTab"))
+        self.assertEqual(L.eval("ForeverArmouryLegacyStrip.points[1][3]"), "BOTTOMLEFT")
         self.assertEqual(L.eval("ForeverArmouryLegacyStrip.points[1][4]"), -2)
-        self.assertEqual(L.eval("ForeverArmouryLegacyStrip.points[1][5]"), -304)
+        self.assertEqual(L.eval("ForeverArmouryLegacyStrip.points[1][5]"), -4)
         # as tall as the panel, not the window's remaining height under the tabs
         self.assertEqual(L.eval("#ForeverArmouryLegacyStrip.points"), 1)
         self.assertEqual(L.eval("ForeverArmouryLegacyStrip.height"), 460)
@@ -4092,8 +4075,8 @@ class UI(unittest.TestCase):
         # no plan followed again: the strip goes and the panel is against the window
         L.run("FA.Legacy.SetActive(nil); FA.RefreshLegacy()")
         self.assertFalse(L.eval("ForeverArmouryLegacyStrip.shown"))
-        self.assertTrue(L.eval("ForeverArmouryLegacyPanel.points[1][2] == LegacySystemFrame"))
-        self.assertEqual(L.eval("ForeverArmouryLegacyPanel.points[1][5]"), -304)
+        self.assertTrue(L.eval("ForeverArmouryLegacyPanel.points[1][2] == LegacySystemFrame.LegacyTreeTab"))
+        self.assertEqual(L.eval("ForeverArmouryLegacyPanel.points[1][5]"), -4)
 
     def test_the_legacy_strip_marks_the_ranks_the_account_has_as_taken(self):
         self.follow_legacy()
