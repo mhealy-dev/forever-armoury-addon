@@ -6,7 +6,7 @@ The addon is made of parts, each with its own switch in its settings. The **leve
 
 ## Install
 
-Copy the folder into `World of Warcraft\_forever_\Interface\AddOns\ForeverArmoury` (the folder's name has to be `ForeverArmoury`), or install it from CurseForge once it's listed there.
+Copy the folder into `World of Warcraft\_classic_beta_\Interface\AddOns\ForeverArmoury` (the folder's name has to be `ForeverArmoury`), or install it from CurseForge once it's listed there.
 
 ## Use
 
