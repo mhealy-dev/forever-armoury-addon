@@ -56,6 +56,7 @@ end
 -- its tree's the third (the beta's dump: 3 to 7 a node, and groupIDs[1] not the display group); BOTH_TREES[node] = true gives
 -- a node the groups of its own tree and the next.
 NO_MAX, TOTAL, NO_ENTRY, NO_GROUP, HIDDEN, UNKNOWN_GROUP, MANY_GROUPS, BOTH_TREES = false, false, false, {}, {}, {}, false, {}
+NO_POSY = {}   -- NO_POSY[node] = true: the node has an x and no y
 NODES, DEFS = {}, {}
 function NODES_FROM(grid)
   NODES, DEFS = {}, {}
@@ -132,8 +133,10 @@ C_Traits = {
     local n = NODES[nodeID]
     local groups = (NO_GROUP.all or NO_GROUP[nodeID]) and {} or UNKNOWN_GROUP[nodeID] and { UNKNOWN_GROUP[nodeID] } or
       BOTH_TREES[nodeID] and { n.tab * 10, n.tab * 10 % 30 + 10 } or MANY_GROUPS and { 5001, 5002, n.tab * 10, 5003 } or { n.tab * 10 }
-    return { ID = nodeID, posX = n.posX, posY = n.posY, groupIDs = groups, entryIDs = { nodeID * 2 }, ranksPurchased = rankOf(configID, nodeID),
+    local info = { ID = nodeID, posX = n.posX, posY = n.posY, groupIDs = groups, entryIDs = { nodeID * 2 }, ranksPurchased = rankOf(configID, nodeID),
       maxRanks = not NO_MAX and n.talent[5] or 0, totalMaxRanks = NO_MAX and TOTAL and n.talent[5] or nil, isVisible = not HIDDEN[nodeID], type = 0 }
+    if NO_POSY[nodeID] then info.posY = nil end
+    return info
   end,
   GetEntryInfo = function(configID, entryID) return { definitionID = entryID / 2, maxRanks = not NO_ENTRY and NODES[entryID / 2].talent[5] or nil } end,
   GetDefinitionInfo = function(defID) return DEFS[defID] end,
@@ -286,7 +289,7 @@ function RESET(api)
   FLUSH()
   API = api or "traits"
   ForeverArmouryDB, ForeverArmouryCharDB = nil, nil; FA.Init(); FA.Talents.Forget(); PLAYER.level = 60
-  TREE, NO_MAX, TOTAL, NO_ENTRY, NO_GROUP, HIDDEN, UNKNOWN_GROUP, MANY_GROUPS, BOTH_TREES = TREE_SMALL, false, false, false, {}, {}, {}, false, {}
+  TREE, NO_MAX, TOTAL, NO_ENTRY, NO_GROUP, HIDDEN, UNKNOWN_GROUP, MANY_GROUPS, BOTH_TREES, NO_POSY = TREE_SMALL, false, false, false, {}, {}, {}, false, {}, {}
   for _, tab in ipairs(TREE) do for _, t in ipairs(tab) do t[4] = 0 end end
   NODES_FROM()
   STAGED, OTHER, LOG, PRINTED, SHIFT = {}, {}, {}, "", false
@@ -778,6 +781,32 @@ class EveryNode(unittest.TestCase):
         self.assertIn("groupIDs 2 [20=Fury 30=Protection]", line)
         self.assertTrue(line.endswith("-> tree 2 Fury (group 20, the first of its groups that is a tree's; group 30 is another tree's too)"), line)
 
+    def test_a_tree_whose_nodes_all_lack_a_group_still_sorts_when_the_others_have_them(self):
+        for lacking in (3, 2, 1):   # Protection (the last tree), Fury (the middle), Arms (the first)
+            live_warrior(max_ranks=True)
+            for row, col, _, _ in SITE_WARRIOR[lacking - 1]:
+                L.run("NO_GROUP[%d] = true" % site_node(lacking, row, col))
+            L.run("FA.Talents.Forget()")
+            self.check_site()
+            by_position = tuple(L.eval("function() local v = FA.Talents.View(); return v.byPosition[1], v.byPosition[2], v.byPosition[3] end")())
+            self.assertEqual(by_position, tuple(len(t) if i == lacking - 1 else 0 for i, t in enumerate(SITE_WARRIOR)))
+            first = [l for l in L.eval("FA.Talents.DumpNodes()").values() if l.startswith("node %d " % site_node(lacking, *SITE_WARRIOR[lacking - 1][0][:2]))][0]
+            self.assertIn("no group, and no node of tree %d has one: split by the widest gaps in x" % lacking, first)
+        # and its leftmost node, and a node of another tree that sits next to the gap, keep to their own trees
+        live_warrior(max_ranks=True)
+        for row, col, _, _ in SITE_WARRIOR[2]:
+            L.run("NO_GROUP[%d] = true" % site_node(3, row, col))
+        L.run("NO_GROUP[%d] = true; FA.Talents.Forget()" % site_node(2, 3, 1))   # Furious Precision, Fury's column 1
+        self.check_site()
+
+    def test_a_node_with_an_x_and_no_y_is_left_unread_without_a_lua_error(self):
+        live_warrior(max_ranks=True)
+        node = site_node(1, 4, 2)
+        L.run("NO_POSY[%d] = true; FA.Talents.Forget()" % node)
+        lines = list(L.eval("FA.Talents.Dump()").values())
+        self.assertIn("left unread: node %d: no position" % node, lines)
+        self.assertEqual(sum(1 for l in L.eval("FA.Talents.DumpNodes()").values() if "not read: no position" in l), 1)
+
     def test_nodes_with_no_maxranks_and_no_group_read_and_sort(self):
         live_warrior(max_ranks=True, groups=False)
         self.check_site()
@@ -807,7 +836,7 @@ class EveryNode(unittest.TestCase):
         L.run("UNKNOWN_GROUP[%d] = 777; FA.Talents.Forget()" % node)
         self.check_site()
         line = [l for l in L.eval("FA.Talents.DumpNodes()").values() if l.startswith("node %d " % node)][0]
-        self.assertIn("-> tree 3 Protection (its group is not one of the tree's, so by x: within 9080 to 10880)", line)
+        self.assertIn("-> tree 3 Protection (its group is not one of the trees', so by x: within 9080 to 10880)", line)
 
     def test_the_rank_count_comes_from_maxranks_else_totalmaxranks_else_the_entry(self):
         live_warrior(max_ranks=False)
@@ -937,6 +966,13 @@ class Unplaced(unittest.TestCase):
         self.assertEqual(L.eval("FA.Talents.Spent()"), 2)    # only the two before the pick off the trees
         self.assertEqual(list(L.eval("LOG").values()), ["buy Deflection", "buy Deflection", "commit"])
         L.run("FA.Talents.Committed(7)")
+
+    def test_the_unplaced_text_counts_talents_once_each(self):
+        text = L.eval("function(picks) return FA.UnplacedText(FA.Progress({ picks = picks }).unplaced) end")
+        self.assertEqual(text("00"), "1 talent of this build isn't in your trees: Arms row 1, column 1")
+        self.assertEqual(text("000000" + "0c"), "4 points on 2 talents of this build aren't in your trees: Arms row 1, column 1; Arms row 4, column 1")
+        self.assertEqual(text("00" + "0c" + "0d" + "0e" + "0e"), "5 points on 4 talents of this build aren't in your trees: Arms row 1, column 1; Arms row 4, column 1; Arms row 4, column 2; and 1 more")
+        self.assertIsNone(text("0101"))
 
     def test_every_pick_placed_is_unchanged(self):
         ok, said = L.eval("function() return FA.Apply({ picks = '0101' }) end")()    # two answers, not three

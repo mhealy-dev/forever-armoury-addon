@@ -134,15 +134,22 @@ function FA.Where(tab, cell)
   return (tree or ("tree " .. tab)) .. " row " .. (math.floor(cell / 4) + 1) .. ", column " .. (cell % 4 + 1)
 end
 
---[[ The picks of a build that no talent of the trees sits under, as a sentence ("2 talents of this build aren't in your
-     trees: Arms row 3, column 2, and Fury row 1, column 1"), naming at most three; nil when there are none. ]]
+--[[ The picks of a build that no talent of the trees sits under, as a sentence ("5 points on 2 talents of this build aren't in
+     your trees: Arms row 3, column 2; Fury row 1, column 1"): a talent with several ranks in the build is one cell, named
+     once, at most three named; nil when there are none. ]]
 function FA.UnplacedText(unplaced)
   if not unplaced or #unplaced == 0 then return nil end
-  local cells = {}
-  for i, u in ipairs(unplaced) do if i <= 3 then cells[i] = FA.Where(u.tab, u.cell) end end
-  if #unplaced > 3 then cells[#cells + 1] = "and " .. (#unplaced - 3) .. " more" end
-  return #unplaced .. (#unplaced == 1 and " talent of this build isn't" or " talents of this build aren't") .. " in your trees: " ..
-    table.concat(cells, "; ")
+  local cells, seen = {}, {}
+  for _, u in ipairs(unplaced) do
+    local key = u.tab * 100 + u.cell
+    if not seen[key] then seen[key] = true; cells[#cells + 1] = FA.Where(u.tab, u.cell) end
+  end
+  local talents, points = #cells, #unplaced
+  local shown = {}
+  for i = 1, math.min(3, talents) do shown[i] = cells[i] end
+  if talents > 3 then shown[#shown + 1] = "and " .. (talents - 3) .. " more" end
+  return (points == talents and "" or (points .. " points on ")) .. talents ..
+    (talents == 1 and " talent of this build isn't" or " talents of this build aren't") .. " in your trees: " .. table.concat(shown, "; ")
 end
 
 --[[ Where a spec is on a build (the active spec without a view). Answers a table, or nil and why:
