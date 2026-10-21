@@ -8,8 +8,9 @@
      FA.Strip.New(owner) makes a strip for an owner, a table with:
        name            the strip frame's global name
        anchor()        the frame the strip hangs on, how far its left edge sits from that frame's right edge (-2 for
-                       the strip to touch it), how far below the frame's top it starts (nil or 0 for the top; the
-                       height of a window's side tabs to hang under them), and its height (nil for the frame's bottom)
+                       the strip to touch it), where its top is (nil or 0 for the frame's top; a number of pixels below
+                       it; or a frame, such as a window's lowest side tab, to hang right under), and its height (nil
+                       for the frame's bottom)
        plan(offset, count)  the plan from the point `offset` points down its order, `count` of them: the list, the offset
                        (held to what fits), how many points follow, where the next sits in the whole order (nil once every
                        point is taken) and how many points the whole order has. A count of 0 gives the last two without
@@ -41,6 +42,7 @@ local ICON = 34     -- the icon size the strip's proportions are drawn for; the 
 local STRIP_PAD = 14    -- the strip is this much wider than its icons
 local PAD, GAP, ARROW, DOTS = 12, 4, 18, 16   -- the strip's margin at its ends, between icons, an arrow's height, the dots' height
 local GAP_AFTER = 8     -- between the points taken and the ones coming
+local UNDER_GAP = 4     -- between a frame the strip hangs under and the strip's top
 local FALLBACK_H = 850  -- the strip's height when the game hasn't laid it out yet (the talent window's, on the live client)
 local UNKNOWN_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
 
@@ -253,7 +255,8 @@ local function makeFrame(self)
   local anchor, by, below, height = owner.anchor()
   local strip = CreateFrame("Frame", owner.name, anchor, TEMPLATE)
   strip:SetWidth(ICON + STRIP_PAD)
-  strip:SetPoint("TOPLEFT", anchor, "TOPRIGHT", by, -(below or 0))
+  if type(below) == "table" then strip:SetPoint("TOPLEFT", below, "BOTTOMLEFT", by, -UNDER_GAP)
+  else strip:SetPoint("TOPLEFT", anchor, "TOPRIGHT", by, -(below or 0)) end
   if height then strip:SetHeight(height) else strip:SetPoint("BOTTOMLEFT", anchor, "BOTTOMRIGHT", by, 0) end
   strip:SetBackdrop(STRIP_BACKDROP)
   strip:SetFrameStrata("HIGH")
