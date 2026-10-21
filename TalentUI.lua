@@ -2,7 +2,8 @@
      order (the last few taken, the next, the ones coming), and a panel beside that listing the character's builds, with
      the active one's next talent named and lit in the trees; the import box, where codes are pasted in and copied out;
      and the addon's settings page. Talents.lua says which frame the talent window is and which button a talent has,
-     so nothing here depends on the client's version of it. ]]
+     so nothing here depends on the client's version of it. The strip fills the window's height with as many icons as fit
+     and scrolls past them. ]]
 
 local _, FA = ...
 local Talents = FA.Talents
@@ -11,8 +12,11 @@ local BACKDROP = { bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background", e
   tile = true, tileSize = 32, edgeSize = 32, insets = { left = 11, right = 12, top = 12, bottom = 11 } }
 local TEMPLATE = BackdropTemplateMixin and "BackdropTemplate" or nil
 local ROWS = 10   -- builds shown at once; the list scrolls past them
-local ICON = 34     -- the strip's icons
-local STRIP_W = 48
+local ICON = 34     -- the icon size the strip's proportions are drawn for; the setting scales them
+local STRIP_PAD = 14    -- the strip is this much wider than its icons
+local PAD, GAP, ARROW, DOTS = 12, 4, 18, 16   -- the strip's margin at its ends, between icons, an arrow's height, the dots' height
+local GAP_AFTER = 8     -- between the points taken and the ones coming
+local FALLBACK_H = 850  -- the strip's height when the game hasn't laid it out yet (the talent window's, on the live client)
 local HEADER_Y, LIST_Y = 132, 156   -- where the panel's builds header and its list start
 local panel, strip, window, importBox, options, hooked
 local panelBy   -- what the panel is anchored to: the strip, or the window when there is no strip
@@ -20,6 +24,13 @@ local offset = 0   -- how many builds are scrolled off the top of the list
 local glows = {}   -- talent button -> its highlight
 local hovers = {}  -- talent button -> the highlight of the strip icon under the mouse
 local hovering     -- the strip icon under the mouse
+local from = 0         -- the strip: how many points are scrolled off its top
+local fromMax = 0      -- ... and the most it can be
+local shownCount = 0   -- ... and how many points it shows
+local scrolled         -- ... and whether the player has scrolled it, which keeps the view where it is until their points change
+local usedHeight       -- ... and the height it was drawn for
+local seen             -- ... and the build and points it was last drawn for, to see them change
+local lastProgress     -- ... and the progress it was drawn from, for a redraw by the wheel
 
 --[[ ---- the highlights in the trees ---- ]]
 --[[ A frame of ours over each of a list of buttons, kept in a set by button: the client's talent frame pools and reuses
@@ -73,7 +84,7 @@ local function dropHover()
 end
 
 --[[ ---- the strip of icons beside the talent window ---- ]]
---[[ The panel's border at half the weight, so a 34 px icon fits a 48 px strip. ]]
+--[[ The panel's border at half the weight, so the icons fit a strip 14 px wider than they are. ]]
 local STRIP_BACKDROP = { bgFile = BACKDROP.bgFile, edgeFile = BACKDROP.edgeFile, tile = true, tileSize = 32, edgeSize = 16,
   insets = { left = 5, right = 5, top = 5, bottom = 5 } }
 
@@ -81,6 +92,7 @@ local STRIP_BACKDROP = { bgFile = BACKDROP.bgFile, edgeFile = BACKDROP.edgeFile,
      chat and a redraw. The confirm's Spend and the strip's click both come here. ]]
 local function spend(build, count)
   local ok, said, stopped = FA.Apply(build, count)
+  FA.StripFollow()   -- the strip shows the next point again, wherever it was scrolled
   FA.Print(ok and ("Spent as " .. (build.name ~= "" and FA.Esc(build.name) or "the build") .. " says: " .. said .. "." ..
     (stopped and (" It stopped at " .. FA.Where(stopped.tab, stopped.cell) .. ", a talent your trees don't have.") or "")) or said)
   FA.Refresh()
@@ -130,35 +142,56 @@ local function showTip(icon)
   GameTooltip:Show()
 end
 
+--[[ The size of the text on an icon at a size: the r/m, the level in its badge, and the "Now" or level under the next one. ]]
+local function fontPx(size) return math.floor(size * 0.3 + 0.5) end
+
+--[[ An icon drawn for a size: the glow, border, check, badge and text scale with it (the proportions are those of ICON). ]]
+local function sizeIcon(icon, size)
+  if icon.drawnSize == size then return end
+  icon.drawnSize = size
+  local k, px = size / ICON, fontPx(size)
+  local function scaled(n) return math.floor(n * k + 0.5) end
+  icon:SetSize(size, size)
+  icon.edge:ClearAllPoints()
+  icon.edge:SetPoint("TOPLEFT", -scaled(2), scaled(2))
+  icon.edge:SetPoint("BOTTOMRIGHT", scaled(2), -scaled(2))
+  icon.glow:ClearAllPoints()
+  icon.glow:SetPoint("TOPLEFT", -scaled(4), scaled(4))
+  icon.glow:SetPoint("BOTTOMRIGHT", scaled(4), -scaled(4))
+  icon.check:SetSize(scaled(16), scaled(16))
+  icon.check:ClearAllPoints()
+  icon.check:SetPoint("TOPRIGHT", scaled(3), scaled(3))
+  icon.levelBg:SetSize(scaled(18), scaled(12))
+  icon.rank:ClearAllPoints()
+  icon.rank:SetPoint("TOPLEFT", scaled(2), -scaled(2))
+  for _, text in ipairs({ icon.rank, icon.level, icon.label }) do
+    local path, _, flags = text:GetFont()
+    if path then text:SetFont(path, px, flags) end
+  end
+  icon.label:ClearAllPoints()
+  icon.label:SetPoint("TOP", icon, "BOTTOM", 0, -1)
+end
+
 local function makeIcon()
   local icon = CreateFrame("Button", nil, strip)
   icon:SetSize(ICON, ICON)
   icon.edge = icon:CreateTexture(nil, "BACKGROUND")   -- the next one's gold border
   icon.edge:SetColorTexture(1, 0.82, 0, 1)
-  icon.edge:SetPoint("TOPLEFT", -2, 2)
-  icon.edge:SetPoint("BOTTOMRIGHT", 2, -2)
   icon.tex = icon:CreateTexture(nil, "ARTWORK")
   icon.tex:SetAllPoints(icon)
   icon.glow = icon:CreateTexture(nil, "OVERLAY")   -- and the glow lightTalent puts on its button
   icon.glow:SetTexture("Interface\\Buttons\\CheckButtonHilight")
   icon.glow:SetBlendMode("ADD")
-  icon.glow:SetPoint("TOPLEFT", -4, 4)
-  icon.glow:SetPoint("BOTTOMRIGHT", 4, -4)
   icon.check = icon:CreateTexture(nil, "OVERLAY")
   icon.check:SetTexture("Interface\\RaidFrame\\ReadyCheck-Ready")
-  icon.check:SetSize(16, 16)
-  icon.check:SetPoint("TOPRIGHT", 3, 3)
   icon.rank = icon:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  icon.rank:SetPoint("TOPLEFT", 2, -2)
   icon.rank:SetShadowOffset(1, -1)
   icon.levelBg = icon:CreateTexture(nil, "ARTWORK", nil, 2)   -- the level a coming point is due in
   icon.levelBg:SetColorTexture(0, 0, 0, 0.7)
-  icon.levelBg:SetSize(18, 12)
   icon.levelBg:SetPoint("BOTTOMRIGHT")
   icon.level = icon:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
   icon.level:SetPoint("CENTER", icon.levelBg)
   icon.label = icon:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")   -- "Now" or "L25", under the next one
-  icon.label:SetPoint("TOP", icon, "BOTTOM", 0, -1)
   icon:SetHighlightTexture("Interface\\Buttons\\ButtonHilight-Square")   -- shown on the mouse over, and only when clickPlan says a click would work
   icon.highlight = icon:GetHighlightTexture()
   icon.highlight:SetBlendMode("ADD")
@@ -187,17 +220,44 @@ local function makeIcon()
   return icon
 end
 
+--[[ The strip moves to show the points from `by` further down the order (negative is up), as far as it goes. The player
+     has scrolled it, so it stays there until their points change (FA.StripFollow). ]]
+local function scrollStrip(by)
+  if fromMax <= 0 then return end
+  from = math.max(0, math.min(from + by, fromMax))
+  scrolled = true
+  FA.RefreshStrip()
+end
+
+--[[ The strip goes back to showing the next point, as it does once the character's points change. ]]
+function FA.StripFollow() scrolled = false end
+
 local function makeStrip()
   strip = CreateFrame("Frame", "ForeverArmouryTalentStrip", window, TEMPLATE)
-  strip:SetWidth(STRIP_W)
+  strip:SetWidth(ICON + STRIP_PAD)
   strip:SetPoint("TOPLEFT", window, "TOPRIGHT", -2, 0)
   strip:SetPoint("BOTTOMLEFT", window, "BOTTOMRIGHT", -2, 0)
   strip:SetBackdrop(STRIP_BACKDROP)
   strip:SetFrameStrata("HIGH")
   strip:SetClampedToScreen(true)
   strip.icons = {}
+  --[[ the game lays the strip out after it is shown, so the height drawn for may be out of date: draw again when it changes ]]
+  strip:SetScript("OnSizeChanged", function(_, _, height)
+    if height and height ~= usedHeight then FA.RefreshSoon() end
+  end)
+  --[[ more points than fit: the wheel over the strip moves it an icon a notch, and an arrow at each end a page ]]
+  strip:EnableMouseWheel(true)
+  strip:SetScript("OnMouseWheel", function(_, delta) scrollStrip(delta > 0 and -1 or 1) end)
+  strip.up = CreateFrame("Button", nil, strip, "UIPanelScrollUpButtonTemplate")
+  strip.up:SetSize(ARROW, ARROW)
+  strip.up:SetPoint("TOP", 0, -8)
+  strip.up:SetScript("OnClick", function() scrollStrip(-math.max(1, shownCount - 1)) end)
+  strip.down = CreateFrame("Button", nil, strip, "UIPanelScrollDownButtonTemplate")
+  strip.down:SetSize(ARROW, ARROW)
+  strip.down:SetPoint("BOTTOM", 0, 8)
+  strip.down:SetScript("OnClick", function() scrollStrip(math.max(1, shownCount - 1)) end)
   strip.more = CreateFrame("Frame", nil, strip)   -- three dots, drawn here since the font may not have a vertical ellipsis
-  strip.more:SetSize(ICON, 16)
+  strip.more:SetSize(ICON, DOTS)
   strip.more:EnableMouse(true)
   for i = 1, 3 do
     local dot = strip.more:CreateTexture(nil, "ARTWORK")
@@ -221,25 +281,65 @@ local function anchorPanel(by)
   if window == UIParent then panel:SetPoint("CENTER") else panel:SetPoint("TOPLEFT", by, "TOPRIGHT", -2, -20) end
 end
 
---[[ The strip for a build's progress (FA.Progress's answer, nil without a build to show): hidden without one, else an
-     icon for each point FA.StripPlan names, top to bottom. The icon under the mouse keeps its highlight and tooltip
-     through the redraw. ]]
+--[[ How many icons fit the strip's height at a size, with or without the arrows (and the dots) a scrolling strip needs:
+     the margins, the label under the next icon and the gap after the taken ones come off the height first. ]]
+local function fits(height, size, arrows)
+  local pad = 2 * PAD + fontPx(size) + 2 + GAP_AFTER + (arrows and 2 * ARROW + DOTS or 0)
+  return math.max(1, math.floor((height - pad) / (size + GAP)))
+end
+
+--[[ Where the view starts when the player hasn't scrolled it: the setting's count of taken points above the next, and at
+     least the setting's count of coming points below it when the strip has room, the next always in view. ]]
+local function startOf(nextAt, total, count)
+  local top
+  if nextAt then
+    top = nextAt - 1 - FA.StripCount("past")
+    top = math.min(math.max(top, nextAt + FA.StripCount("coming") - count), nextAt - 1)
+  else
+    top = total - count   -- every point is taken: the end of the build
+  end
+  return math.max(0, math.min(top, total - count))
+end
+
+--[[ The strip for a build's progress (FA.Progress's answer, nil without a build to show): hidden without one, else as
+     many of the build's points as its height holds at the icon size, top to bottom from where the view starts; a build
+     that doesn't fit scrolls. The icon under the mouse keeps its highlight and tooltip through the redraw. ]]
 local function refreshStrip(p)
   if not strip then return end
-  local entries, more
-  if p then entries, more = FA.StripPlan(p, FA.StripCount("past"), FA.StripCount("coming")) end
-  if not entries or #entries == 0 then
+  lastProgress = p
+  local size = FA.StripSize()
+  local _, _, _, nextAt, total = FA.StripPlan(p or { taken = {}, left = {} }, 0, 0)
+  if total == 0 then
     strip:Hide()
     anchorPanel(window)
     dropHover()
     return
   end
+  strip:SetWidth(size + STRIP_PAD)
   strip:Show()
   anchorPanel(strip)
-  local y = 12
+  local height = strip:GetHeight()   -- once anchored and shown
+  if type(height) ~= "number" or height <= 0 then height = window:GetHeight() end
+  if type(height) ~= "number" or height <= 0 then height = FALLBACK_H end
+  usedHeight = height
+  local arrows = total > fits(height, size, false)
+  local count = arrows and fits(height, size, true) or total
+  --[[ a new build or a point spent, and the strip follows the next point again ]]
+  local now = tostring(FA.ActiveBuild()) .. ":" .. p.spent
+  if now ~= seen then scrolled = false; seen = now end
+  fromMax = math.max(0, total - count)
+  if not scrolled then from = startOf(nextAt, total, count) end
+  local entries, above, below = FA.StripPlan(p, from, count)
+  from, shownCount = above, #entries
+  strip.up:SetShown(arrows)
+  strip.down:SetShown(arrows)
+  if above > 0 then strip.up:Enable() else strip.up:Disable() end
+  if below > 0 then strip.down:Enable() else strip.down:Disable() end
+  local y = PAD + (arrows and ARROW or 0)
   for i, e in ipairs(entries) do
     local icon = strip.icons[i]
     if not icon then icon = makeIcon(); strip.icons[i] = icon end
+    sizeIcon(icon, size)
     local t = e.talent
     icon.entry = e
     icon.tex:SetTexture(Talents.Icon(t))   -- a pick off the trees has no talent: a question mark, greyed
@@ -256,18 +356,19 @@ local function refreshStrip(p)
     icon.label:SetShown(e.kind == "next")
     icon.label:SetText(e.kind == "next" and (e.now and "Now" or ("L" .. e.level)) or "")
     clickPlan(icon)
-    if e.kind == "coming" and entries[i - 1].kind ~= "coming" then y = y + 8 end   -- a gap after the next one
+    if e.kind == "coming" and entries[i - 1] and entries[i - 1].kind ~= "coming" then y = y + GAP_AFTER end   -- a gap after the next one
     icon:ClearAllPoints()
     icon:SetPoint("TOP", strip, "TOP", 0, -y)
     icon:Show()
-    y = y + ICON + 4 + (e.kind == "next" and 12 or 0)
+    y = y + size + GAP + (e.kind == "next" and fontPx(size) + 2 or 0)
   end
   for i = #entries + 1, #strip.icons do
     strip.icons[i].entry = false
     strip.icons[i]:Hide()
   end
-  strip.more.count = more
-  strip.more:SetShown(more > 0)
+  strip.more.count = below
+  strip.more:SetShown(below > 0)
+  strip.more:SetWidth(size)
   strip.more:ClearAllPoints()
   strip.more:SetPoint("TOP", strip, "TOP", 0, -y)
   if hovering and hovering.entry then
@@ -276,6 +377,11 @@ local function refreshStrip(p)
   else
     dropHover()
   end
+end
+
+--[[ The strip redrawn as it was last drawn: the wheel and the arrows move it without the game's answers changing. ]]
+function FA.RefreshStrip()
+  if strip and strip:IsShown() then refreshStrip(lastProgress) end
 end
 
 --[[ ---- the panel beside the talent window ---- ]]
@@ -750,37 +856,45 @@ function FA.SetupOptions()
     y = y - 48
   end
 
-  --[[ The strip's counts: how many points it shows before the next one, and after it. ]]
+  --[[ The strip's settings: where its view starts (the taken points above the next, the coming points kept in view below it)
+       and how big its icons are. ]]
   local heading = options:CreateFontString(nil, "OVERLAY", "GameFontNormal")
   heading:SetPoint("TOPLEFT", 16, y)
   heading:SetText("The icon strip beside the talent window")
   y = y - 34
-  for _, kind in ipairs({ { "past", "Taken points shown" }, { "coming", "Coming points shown" } }) do
-    local key, text = kind[1], kind[2]
+  local sliders = {
+    { "past", "Taken points above the next at the start", 0, FA.STRIP_MAX.past },
+    { "coming", "Coming points kept in view", 0, FA.STRIP_MAX.coming },
+    { "size", "Icon size", FA.STRIP_SIZE.min, FA.STRIP_SIZE.max },
+  }
+  for _, kind in ipairs(sliders) do
+    local key, text, low, high = kind[1], kind[2], kind[3], kind[4]
     local name = "ForeverArmouryStrip" .. key:sub(1, 1):upper() .. key:sub(2)
+    local function get() return key == "size" and FA.StripSize() or FA.StripCount(key) end
     local slider = CreateFrame("Slider", name, options, "OptionsSliderTemplate")
     slider:SetPoint("TOPLEFT", 20, y)
     slider:SetWidth(180)
-    slider:SetMinMaxValues(0, FA.STRIP_MAX[key])
+    slider:SetMinMaxValues(low, high)
     slider:SetValueStep(1)
     if slider.SetObeyStepOnDrag then slider:SetObeyStepOnDrag(true) end
     --[[ the template's own captions say LOW and HIGH; a client without them (or named otherwise) is left alone ]]
-    if _G[name .. "Low"] then _G[name .. "Low"]:SetText("0") end
-    if _G[name .. "High"] then _G[name .. "High"]:SetText(tostring(FA.STRIP_MAX[key])) end
+    if _G[name .. "Low"] then _G[name .. "Low"]:SetText(tostring(low)) end
+    if _G[name .. "High"] then _G[name .. "High"]:SetText(tostring(high)) end
     if _G[name .. "Text"] then _G[name .. "Text"]:SetText(text) end
     local label = options:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     label:SetPoint("LEFT", slider, "RIGHT", 14, 0)
     local function show(n) label:SetText(n) end
-    slider:SetValue(FA.StripCount(key))
-    show(FA.StripCount(key))
+    slider:SetValue(get())
+    show(get())
     slider:SetScript("OnValueChanged", function(_, value)
       value = math.floor(value + 0.5)
       if value == FA.db.strip[key] then return end
       FA.db.strip[key] = value
       show(value)
+      FA.StripFollow()   -- the view starts where the setting says
       FA.Refresh()
     end)
-    options:HookScript("OnShow", function() slider:SetValue(FA.StripCount(key)); show(FA.StripCount(key)) end)
+    options:HookScript("OnShow", function() slider:SetValue(get()); show(get()) end)
     y = y - 40
   end
   if Settings and Settings.RegisterCanvasLayoutCategory then

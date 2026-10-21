@@ -15,7 +15,7 @@
 
      Saved variables: ForeverArmouryDB for the account (every build and gear route, by class, every Legacy plan, and the parts' switches)
      and ForeverArmouryCharDB for the character (which build it follows, whether the panel's build list is open, and the
-     spec it chose for its gear route). Besides the parts' switches the account has strip, the counts the strip shows. ]]
+     spec it chose for its gear route). Besides the parts' switches the account has strip, where the strip starts and how big its icons are. ]]
 
 local ADDON, FA = ...
 _G.ForeverArmoury = FA
@@ -63,9 +63,11 @@ FA.PARTS = {
   { key = "legacy", name = "Legacy plans", text = "The site's Legacy plan beside the Legacy window: the perks still to buy, and Apply buying them" },
 }
 
---[[ How many points the strip beside the talent window shows: the last ones taken, and the ones coming after the next. ]]
+--[[ Where the strip beside the talent window starts its view: the points taken above the next, and the points coming kept in
+     view after it. And the size of its icons, in pixels. ]]
 FA.STRIP_MAX = { past = 5, coming = 8 }
-local DEFAULTS = { builds = {}, gear = {}, legacy = {}, nextId = 1, parts = { plan = true, gear = true, legacy = true }, strip = { past = 3, coming = 5 } }
+FA.STRIP_SIZE = { min = 34, max = 56 }
+local DEFAULTS = { builds = {}, gear = {}, legacy = {}, nextId = 1, parts = { plan = true, gear = true, legacy = true }, strip = { past = 3, coming = 5, size = 44 } }
 
 function FA.Print(text)
   (DEFAULT_CHAT_FRAME or ChatFrame1):AddMessage("|cffffd100Forever Armoury:|r " .. tostring(text))
@@ -118,6 +120,11 @@ end
 --[[ A strip count from the settings ("past" or "coming"), a whole number within what the strip has room for. ]]
 function FA.StripCount(key)
   return math.max(0, math.min(FA.STRIP_MAX[key], math.floor(FA.db.strip[key] + 0.5)))
+end
+
+--[[ The size of the strip's icons from the settings, a whole number of pixels from the smallest to the largest. ]]
+function FA.StripSize()
+  return math.max(FA.STRIP_SIZE.min, math.min(FA.STRIP_SIZE.max, math.floor(FA.db.strip.size + 0.5)))
 end
 
 function FA.PartOn(key) return FA.db and FA.db.parts[key] ~= false end
@@ -267,7 +274,10 @@ events:SetScript("OnEvent", function(_, event, arg1)
     if FA.Legacy.CommitFailed(arg1) then FA.Print("The game didn't apply the Legacy perks, so they were rolled back. Nothing was bought.") end
     FA.RefreshSoon()
   else
-    if event == "TRAIT_CONFIG_UPDATED" then FA.Talents.Committed(arg1); FA.Legacy.Committed(arg1) end
+    if event == "TRAIT_CONFIG_UPDATED" then
+      FA.Talents.Committed(arg1); FA.Legacy.Committed(arg1)
+      if FA.StripFollow then FA.StripFollow() end
+    end
     FA.RefreshSoon()
   end
 end)
