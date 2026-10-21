@@ -13,6 +13,7 @@ ForeverArmoury.lua
 BuildCode.lua
 Talents.lua
 Builds.lua
+Strip.lua
 TalentUI.lua
 GearCode.lua
 Data/Routes.lua

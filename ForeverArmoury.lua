@@ -5,18 +5,19 @@
        BuildCode.lua   a build code as the site writes it, read and written (FA.Code)
        Talents.lua     the game's talents as three trees of cells, and its talent window (FA.Talents)
        Builds.lua      the saved builds, the character's active one, and where it is on it (FA.Progress)
-       TalentUI.lua    the panel and the strip of icons beside the talent window, the highlights, the import box, the settings
+       Strip.lua       the strip of icons beside a window, shared by the talent window and the Legacy window, and the highlights in the trees (FA.Strip)
+       TalentUI.lua    the panel beside the talent window and its side of the strip, the import box, the settings
        GearCode.lua    a gear route code as the site writes it, read and written (FA.GearCode)
        Data/Routes.lua the gear routes the addon ships, written by tools/routes.py (FA.RouteData)
        Gear.lua        the shipped and the saved gear routes, the character's, and the next pieces at its level (FA.Gear)
        GearUI.lua      the panel beside the character window listing them
        LegacyCode.lua  a Legacy plan code as the site writes it, read and written (FA.LegacyCode)
        Legacy.lua      the account's Legacy plans, where it is on one, and what Apply buys in the three Legacy trees (FA.Legacy)
-       LegacyUI.lua    the panel beside the game's Legacy window listing them
+       LegacyUI.lua    the strip and the panel beside the game's Legacy window listing them
 
-     Saved variables: ForeverArmouryDB for the account (every build and gear route, by class, every Legacy plan, and the parts' switches)
+     Saved variables: ForeverArmouryDB for the account (every build and gear route, by class, every Legacy plan, whether the Legacy panel's plan list is open, and the parts' switches)
      and ForeverArmouryCharDB for the character (which build it follows, whether the panel's build list is open, and the
-     spec it chose for its gear route). Besides the parts' switches the account has strip, where the strip starts and how big its icons are. ]]
+     spec it chose for its gear route). Besides the parts' switches the account has strip, where the strips start and how big their icons are. ]]
 
 local ADDON, FA = ...
 _G.ForeverArmoury = FA
@@ -61,10 +62,10 @@ function FA.FirstLevel(build) return FA.FIRST_LEVEL - (FA.TalentedRank(build)) e
 FA.PARTS = {
   { key = "plan", name = "Level plan", text = "Your builds beside the talent window, with the next talent to take" },
   { key = "gear", name = "Leveling gear", text = "The site's gear route beside the character window: the pieces to get at your level, and where" },
-  { key = "legacy", name = "Legacy plans", text = "The site's Legacy plan beside the Legacy window: the perks still to buy, and Apply buying them" },
+  { key = "legacy", name = "Legacy plans", text = "The site's Legacy plan beside the Legacy window: a strip of its ranks, the perks still to buy, and Apply buying them" },
 }
 
---[[ Where the strip beside the talent window starts its view: the points taken above the next, and the points coming kept in
+--[[ Where the strips beside the talent window and the Legacy window start their view: the points taken above the next, and the points coming kept in
      view after it. And the size of its icons, in pixels. ]]
 FA.STRIP_MAX = { past = 5, coming = 8 }
 FA.STRIP_SIZE = { min = 34, max = 56 }

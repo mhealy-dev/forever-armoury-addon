@@ -1,9 +1,12 @@
---[[ The Legacy part's panel: beside the game's Legacy window (LegacySystemFrame, Blizzard_LegacySystem, which loads on
-     demand), the account's Legacy plans, the plan it follows with each perk's ranks had and wanted, the points available
-     against the seasonal cap, and an Apply that buys what's next. Legacy.lua says what that is and does the buying; the
-     next perk of each tree is lit in the window's tree with the talent window's glow (TalentUI.lua's FA.LightButtons),
-     and only when the tree shows its button: the window shows one tree at a time. The panel sits past the window's side
-     tabs, which are how the person gets to the trees page. ]]
+--[[ The Legacy part's windows: beside the game's Legacy window (LegacySystemFrame, Blizzard_LegacySystem, which loads on
+     demand), a strip of icons showing the followed plan's ranks in the order Apply buys them (the ranks the account has,
+     the next, the ones coming), as the talent window's strip does for a build (Strip.lua draws both; the plan's side of
+     it is here), and a panel beside that with the account's Legacy plans (a section that opens and closes), the plan it
+     follows with each perk's ranks had and wanted, the points available against the seasonal cap, and an Apply that
+     buys what's next. Legacy.lua says what that is and does the buying; the next perk of each tree is lit in the
+     window's tree with the talent window's glow (Strip.lua's FA.LightButtons), and only when the tree shows its button:
+     the window shows one tree at a time. The strip and the panel sit past the window's side tabs, which are how the
+     person gets to the trees page. ]]
 
 local _, FA = ...
 local Legacy = FA.Legacy
@@ -14,28 +17,151 @@ local TEMPLATE = BackdropTemplateMixin and "BackdropTemplate" or nil
 local WIDTH = 230
 local PLAN_ROWS, PERK_ROWS = 5, 12   -- plans shown at once (the list scrolls past them), perks shown (the rest are counted)
 local PLAN_Y, PERK_H = 160, 16
+local HEADER_Y = 140   -- the plans section's header row, above its list
+local PLUS, MINUS = "Interface\\Buttons\\UI-PlusButton-Up", "Interface\\Buttons\\UI-MinusButton-Up"
 local TAB_WIDTH = 40   -- the Legacy window's side tabs, when the game won't say how wide they are
 local GREEN, GOLD, GREY, RED = "|cff40ff40", "|cffffd100", "|cff909090", "|cffff6060"
-local TREE_PAGE = 3   -- LegacySystemFrame.Pages: the reward track, the challenges, then the trees
-local panel, hooked
+local panel, strip, window, hooked
+local panelBy         -- what the panel is anchored to: the strip, or the window when there is no strip
+local tabWidth        -- how far past the window's right edge its side tabs reach
 local offset = 0      -- how many plans are scrolled off the top of the list
 local glows = {}      -- perk button -> its highlight
+local followed, progress, sequence, nowOk   -- the strip's: the plan, where the account is on it, its ranks in order, and whether a point can be spent now
 
 local function place(frame, x, y)
   frame:ClearAllPoints()
   frame:SetPoint("TOPLEFT", panel, "TOPLEFT", x, -y)
 end
 
+--[[ ---- the strip of icons beside the Legacy window ---- ]]
+--[[ Buys the plan's next ranks (the first `limit` of them, else all Apply would): tree by tree, all or none in each
+     (FA.ApplyLegacy), then a line in chat and a redraw. The confirm's Buy and the strip's click both come here. ]]
+local function buy(plan, limit)
+  local ok, said = FA.ApplyLegacy(plan, limit)
+  FA.StripFollow()   -- the strip shows the next rank again, wherever it was scrolled
+  FA.Print(ok and ("Bought as " .. FA.ShownName(plan) .. " says: " .. said .. ".") or said)
+  FA.RefreshLegacy()
+end
+
+--[[ A rank of the plan's order as the strip draws it: the perk's name and icon as the game's trait definition gives them
+     (through the tree's config), else the site's (the perk's table row); the r/m; "Now" or "wait" under the next one
+     and the tree's short name on a coming one. ]]
+local function entry(x, n)
+  local s = x.step
+  local perk = Legacy.PERKS[s.perk]
+  local configID = Legacy.Config(s.tree)
+  local info = configID and FA.Talents.Game("C_Traits.GetNodeInfo", configID, perk.node)
+  local name, icon, spell
+  if info then name, icon, spell = FA.Talents.NodeNameAndIcon(configID, info) end
+  return { kind = x.kind, n = n, perk = s.perk, rank = s.rank, max = s.max, node = s.node, tree = s.tree, step = s, spell = spell,
+    name = name or perk.name, icon = icon or ("Interface\\Icons\\" .. perk.icon), ranks = FA.Strip.RankText(s.rank, s.max),
+    label = x.kind == "next" and (nowOk and "Now" or "wait") or nil, badge = x.kind == "coming" and s.tree.short or nil }
+end
+
+--[[ The plan's ranks in the order to buy them, as kind and step: those the account has (the order Apply would have bought
+     them in, from nothing), the next rank to buy, and the ones after it (Progress's steps). Nothing without a plan that
+     can be followed. ]]
+local function orderOf(plan, p)
+  local list = {}
+  if not (plan and p) then return list end
+  for _, s in ipairs(Legacy.Order(plan)) do
+    local perk = p.perks[s.perk]
+    if s.rank <= math.min(perk.have, perk.want) then list[#list + 1] = { kind = "taken", step = s } end
+  end
+  for i, s in ipairs(p.steps) do list[#list + 1] = { kind = i == 1 and "next" or "coming", step = s } end
+  return list
+end
+
+--[[ The plan's side of the strip: the ranks from where the view is, the perk's button in the tree on show for hover, the
+     game's tooltip for the perk, and the click, which buys the next rank the way Apply does (switching the window to its
+     tree first when another is on show), and the shift-click, which is Apply. ]]
+local owner = {
+  name = "ForeverArmouryLegacyStrip",
+  verb = "buy",
+  anchor = function() return window, tabWidth end,
+  refreshKey = function() return tostring(followed and followed.id) .. ":" .. (progress and progress.spent or "") end,
+  button = function(e) return Legacy.Button(e) end,
+}
+
+function owner.plan(from, count)
+  local total, nextAt = #sequence, nil
+  for i, x in ipairs(sequence) do if x.kind == "next" then nextAt = i end end
+  from = math.max(0, math.min(math.floor(from or 0), total - count))
+  local out = {}
+  for i = from + 1, math.min(total, from + count) do out[#out + 1] = entry(sequence[i], i) end
+  return out, from, total - from - #out, nextAt, total
+end
+
+function owner.tooltip(e, tip)
+  if e.spell then tip:SetSpellByID(e.spell) else tip:SetText(e.name, 1, 1, 1) end
+  tip:AddLine("Rank " .. e.rank .. " of " .. e.max, 1, 0.82, 0)
+  if e.kind == "taken" then tip:AddLine("Taken", 0.3, 1, 0.3) end
+  if not Legacy.TreeShown(e.tree) then tip:AddLine("In the " .. e.tree.name .. " tree", 0.6, 0.8, 1) end
+end
+
+--[[ What a click on a strip icon can do now: how many ranks Apply would buy, or nil and why not (nil and nil for an icon
+     that isn't the next one, which has no click). The reasons are Apply's own, and that the next rank is in a tree the
+     window shows no button for and an addon can't switch to. ]]
+function owner.can(e)
+  local plan = Legacy.Active()
+  if e.kind ~= "next" or not plan then return nil end
+  if Legacy.Applying() then return nil, "That rank is being bought." end
+  local list, why = Legacy.Plan(plan)
+  if not list then return nil, why end
+  if not Legacy.TreeShown(e.tree) and not Legacy.CanShowTree() then
+    return nil, "Open the " .. e.tree.name .. " tab in the Legacy window to buy it."
+  end
+  return #list
+end
+
+function owner.spend()
+  local plan = Legacy.Active()
+  local list = plan and Legacy.Plan(plan)
+  if not list then return end
+  if not Legacy.TreeShown(list[1].tree) then Legacy.ShowTree(list[1].tree) end
+  buy(plan, 1)
+end
+function owner.spendAll() FA.AskApplyLegacy() end
+
+--[[ The panel sits against the strip while there is one to show, else against the window past its side tabs. ]]
+local function anchorPanel(by)
+  if panelBy == by then return end
+  panelBy = by
+  panel:ClearAllPoints()
+  if window == UIParent then panel:SetPoint("CENTER")
+  elseif by == window then panel:SetPoint("TOPLEFT", window, "TOPRIGHT", tabWidth, -20)
+  else panel:SetPoint("TOPLEFT", by, "TOPRIGHT", -2, -20) end
+end
+
+--[[ The strip for the followed plan and where the account is on it (Progress's answer, nil without a plan that can be
+     followed), with whether a Legacy point can be spent now: one is available and the cap isn't reached. ]]
+local function refreshStrip(plan, p, available, cap)
+  if not strip then return end
+  followed, progress = plan, p
+  nowOk = p ~= nil and (available == nil or available > 0) and p.spent < (cap or Legacy.CAP)
+  sequence = orderOf(plan, p)
+  anchorPanel(strip:Refresh() and strip.frame or window)
+end
+
+--[[ Whether the plans list is open: as the account left it, else open until it follows a plan. ]]
+local function plansOpen(active)
+  local open = FA.db.legacyPlansOpen
+  if type(open) ~= "boolean" then return active == nil end
+  return open
+end
+
 local function makePanel()
-  local window = _G.LegacySystemFrame or UIParent
+  window = _G.LegacySystemFrame or UIParent
+  --[[ the window's side tabs (the reward track, the challenges and the trees) hang off its right edge from y = -60
+       down, so the strip and the panel start past them: the width of one, read now, else about 40 ]]
+  local tab = window ~= UIParent and window.LegacyRewardTrackTab
+  tabWidth = type(tab) == "table" and tab.GetWidth and tonumber(tab:GetWidth()) or 0
+  if tabWidth <= 0 then tabWidth = TAB_WIDTH end
+  sequence = {}
+  if window ~= UIParent then strip = FA.Strip.New(owner) end
   panel = CreateFrame("Frame", "ForeverArmouryLegacyPanel", window, TEMPLATE)
   panel:SetSize(WIDTH, 460)
-  --[[ the window's side tabs (the reward track, the challenges and the trees) hang off its right edge from y = -60
-       down, so the panel starts past them: the width of one, read now, else about 40 ]]
-  local tab = window ~= UIParent and window.LegacyRewardTrackTab
-  local tabWidth = type(tab) == "table" and tab.GetWidth and tonumber(tab:GetWidth()) or 0
-  if tabWidth <= 0 then tabWidth = TAB_WIDTH end
-  if window == UIParent then panel:SetPoint("CENTER") else panel:SetPoint("TOPLEFT", window, "TOPRIGHT", tabWidth, -20) end
+  anchorPanel(window)
   panel:SetBackdrop(BACKDROP)
   panel:SetFrameStrata("HIGH")
   panel:SetClampedToScreen(true)
@@ -66,9 +192,25 @@ local function makePanel()
   panel.apply:SetScript("OnLeave", function() GameTooltip:Hide() end)
   panel.apply:SetMotionScriptsWhileDisabled(true)
 
-  panel.plansHeader = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  panel.plansHeader:SetJustifyH("LEFT")
-  place(panel.plansHeader, 16, 142)
+  --[[ The plans are a section: a header row that opens and closes the list, and says which plan is followed when it's closed. ]]
+  local header = CreateFrame("Button", nil, panel)
+  header:SetSize(WIDTH - 32, 20)
+  place(header, 16, HEADER_Y)
+  header:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+  header:GetHighlightTexture():SetBlendMode("ADD")
+  header.sign = header:CreateTexture(nil, "ARTWORK")
+  header.sign:SetSize(14, 14)
+  header.sign:SetPoint("LEFT", 4, 0)
+  header.text = header:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  header.text:SetPoint("LEFT", 24, 0)
+  header.text:SetPoint("RIGHT", -4, 0)
+  header.text:SetJustifyH("LEFT")
+  header.text:SetWordWrap(false)
+  header:SetScript("OnClick", function()
+    FA.db.legacyPlansOpen = not plansOpen(Legacy.Active())
+    FA.RefreshLegacy()
+  end)
+  panel.plansHeader = header
 
   panel.rows = {}
   for i = 1, PLAN_ROWS do
@@ -158,9 +300,7 @@ StaticPopupDialogs["FOREVERARMOURY_LEGACY_APPLY"] = {
   OnAccept = function(self, data)
     local plan = data and Legacy.Find(data.id)
     if not plan then return end
-    local ok, said = FA.ApplyLegacy(plan)
-    FA.Print(ok and ("Bought as " .. FA.ShownName(plan) .. " says: " .. said .. ".") or said)
-    FA.RefreshLegacy()
+    buy(plan)
   end,
   timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
 }
@@ -224,16 +364,20 @@ function FA.RefreshLegacy()
   local f = _G.LegacySystemFrame
   if not FA.PartOn("legacy") or (f and not f:IsShown()) then
     panel:Hide()
+    if strip then strip:Hide() end
     FA.LightButtons(glows, {})
     return
   end
   panel:Show()
   local list, active = Legacy.Plans(), Legacy.Active()
   offset = math.max(0, math.min(offset, #list - PLAN_ROWS))
-  local shown = math.min(#list, PLAN_ROWS)
-  panel.plansHeader:SetText("Plans (" .. #list .. ")")
+  --[[ The plans section: its header, then the list when it's open; the panel is as tall as what it shows. ]]
+  local open = plansOpen(active)
+  local shown = open and math.min(#list, PLAN_ROWS) or 0
+  panel.plansHeader.sign:SetTexture(open and MINUS or PLUS)
+  panel.plansHeader.text:SetText((not open and active) and FA.ShownName(active) or ("Plans (" .. #list .. ")"))
   for i, row in ipairs(panel.rows) do
-    local plan = list[i + offset]
+    local plan = open and list[i + offset] or nil
     row.plan = plan
     if plan then
       row.text:SetText((Legacy.Differs(plan) and (RED .. "! |r") or "") .. FA.ShownName(plan))
@@ -244,7 +388,7 @@ function FA.RefreshLegacy()
     end
   end
   local y = PLAN_Y + shown * 21 + 4
-  if #list > PLAN_ROWS then
+  if open and #list > PLAN_ROWS then
     place(panel.up, 16, y)
     panel.up:Show(); panel.down:Show(); panel.more:Show()
     if offset > 0 then panel.up:Enable() else panel.up:Disable() end
@@ -259,6 +403,7 @@ function FA.RefreshLegacy()
   local p, why
   if active then p, why = Legacy.Progress(active) end
   panel.status:SetText(statusText(active, p, why, available, cap))
+  refreshStrip(active, p, available, cap)
 
   --[[ Apply says how many ranks it would buy, or why it can't, before it's pressed. ]]
   local steps, held
@@ -344,7 +489,7 @@ function FA.ToggleLegacy()
     return
   end
   if not was and f:IsShown() and EventRegistry and EventRegistry.TriggerEvent then
-    pcall(EventRegistry.TriggerEvent, EventRegistry, "Legacy.SelectPage", TREE_PAGE)
+    pcall(EventRegistry.TriggerEvent, EventRegistry, "Legacy.SelectPage", Legacy.TREE_PAGE)
   end
   FA.RefreshLegacy()
 end
