@@ -2782,6 +2782,7 @@ class UI(unittest.TestCase):
         self.assertTrue(L.eval("ForeverArmouryTalentStrip.icons[2].tex.desaturated"))
         self.assertFalse(L.eval("ForeverArmouryTalentStrip.icons[1].tex.desaturated"))
         self.assertEqual(L.eval("ForeverArmouryTalentStrip.icons[2].rank.text"), "")
+        self.assertEqual(self.strip_y("divider"), self.HEAD + self.SLOT - 2)   # one line, above the first point after the next: not another after each unplaced pick
         # its tooltip names the cell, and a click does nothing
         tip = self.tip(2)
         self.assertEqual(L.eval("TIP.text"), "Not in your trees")
@@ -3189,6 +3190,11 @@ class UI(unittest.TestCase):
         self.big(spent=20)
         L.run("FA.db.strip.past = 0; FA.Refresh()")
         self.assertEqual(self.strip_y("divider"), self.HEAD + self.SLOT - 2)
+
+    def test_an_unplaced_pick_among_the_coming_ones_is_not_another_boundary(self):
+        self.follow_off("0101010001")   # the next, two coming, a pick off the trees, one coming
+        self.assertEqual([line.split("|")[0].split(" ")[0] for line in self.strip()], ["next", "coming", "coming", "unplaced", "coming"])
+        self.assertEqual(self.strip_y("divider"), self.HEAD + self.SLOT - 2)   # above the first coming only
 
     def test_the_dots_are_in_a_fixed_footer_slot(self):
         self.big()

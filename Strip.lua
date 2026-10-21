@@ -350,7 +350,7 @@ function Methods:Refresh()
   strip.down:SetShown(arrows)
   if above > 0 then strip.up:Enable() else strip.up:Disable() end
   if below > 0 then strip.down:Enable() else strip.down:Disable() end
-  local gapAt   -- the slot the first point coming sits in after one that isn't, where the separator is drawn above
+  local gapAt   -- the slot of the first point after the ones taken and the next, where the separator is drawn above
   for i, e in ipairs(entries) do
     local icon = strip.icons[i]
     if not icon then icon = makeIcon(self); strip.icons[i] = icon end
@@ -371,7 +371,8 @@ function Methods:Refresh()
     icon.label:SetShown(label ~= "")
     icon.label:SetText(label)
     self:Clickable(icon)
-    if e.kind == "coming" and entries[i - 1] and entries[i - 1].kind ~= "coming" then gapAt = i end
+    local before = entries[i - 1] and entries[i - 1].kind
+    if (e.kind == "coming" or e.kind == "unplaced") and (before == "taken" or before == "next") then gapAt = gapAt or i end   -- the first boundary only: an unplaced pick among the coming ones isn't another
     icon:ClearAllPoints()
     icon:SetPoint("TOP", strip, "TOP", 0, -slotY(i, size))
     icon:Show()
