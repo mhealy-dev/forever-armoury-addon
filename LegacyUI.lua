@@ -14,7 +14,7 @@ local Legacy = FA.Legacy
 local BACKDROP = { bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background", edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
   tile = true, tileSize = 32, edgeSize = 32, insets = { left = 11, right = 12, top = 12, bottom = 11 } }
 local TEMPLATE = BackdropTemplateMixin and "BackdropTemplate" or nil
-local WIDTH = 230
+local WIDTH, HEIGHT = 230, 460   -- the panel's; the strip is as tall, since under the tabs the window's own bottom is near
 local PLAN_ROWS, PERK_ROWS = 5, 12   -- plans shown at once (the list scrolls past them), perks shown (the rest are counted)
 local PLAN_Y, PERK_H = 160, 16
 local HEADER_Y = 140   -- the plans section's header row, above its list
@@ -78,7 +78,7 @@ end
 local owner = {
   name = "ForeverArmouryLegacyStrip",
   verb = "buy",
-  anchor = function() return window, -2, tabsBottom end,
+  anchor = function() return window, -2, tabsBottom, HEIGHT end,
   refreshKey = function() return tostring(followed and followed.id) .. ":" .. (progress and progress.spent or "") end,
   button = function(e) return Legacy.Button(e) end,
 }
@@ -176,7 +176,7 @@ local function makePanel()
   sequence = {}
   if window ~= UIParent then strip = FA.Strip.New(owner) end
   panel = CreateFrame("Frame", "ForeverArmouryLegacyPanel", window, TEMPLATE)
-  panel:SetSize(WIDTH, 460)
+  panel:SetSize(WIDTH, HEIGHT)
   anchorPanel(window)
   panel:SetBackdrop(BACKDROP)
   panel:SetFrameStrata("HIGH")
