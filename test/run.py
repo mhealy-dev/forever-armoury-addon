@@ -3681,14 +3681,27 @@ class UI(unittest.TestCase):
         self.assertEqual(tip[:3], (True, 279895, None))
         self.assertEqual(tip[4], " |Quest: #96393|On the route at level 14.")
         # to the right of the panel, not over it
-        point = L.eval("function() local p = GameTooltip.points[#GameTooltip.points]; return p[1], p[2] == ForeverArmouryGearPanel, p[3] end")()
-        self.assertEqual(point, ("TOPLEFT", True, "TOPRIGHT"))
+        point = L.eval("function() local p = GameTooltip.points[#GameTooltip.points]; return p[1], p[2] == ForeverArmouryGearPanel, p[3] end")
+        self.assertEqual(point(), ("TOPLEFT", True, "TOPRIGHT"))
         # a boss: the dungeon and the boss as the row has them
         self.gear_hover(self.piece_row("item 270231"))
         self.assertEqual(L.eval("TIP.item"), 270231)
         self.assertEqual(L.eval("TIP.lines[2]"), "dungeon 3065: NPC 3495")
         # the level is the route's
         self.assertEqual(L.eval("TIP.lines[3]"), "On the route at level 13.")
+        # on a screen with no room to the right for the tooltip and the game's comparison with what's worn, the tooltip goes
+        # left of the panel, so the comparison (which the game puts left of the tooltip) doesn't cover the panel
+        L.run("ForeverArmouryGearPanel.GetRight = function() return 1200 end; UIParent.GetRight = function() return 1500 end")
+        self.gear_hover(row)
+        self.assertEqual(point(), ("TOPRIGHT", True, "TOPLEFT"))
+        L.run("UIParent.GetRight = function() return 2000 end")
+        self.gear_hover(row)
+        self.assertEqual(point(), ("TOPLEFT", True, "TOPRIGHT"))
+        # a client that errors on the positions: the right, as before
+        L.run("ForeverArmouryGearPanel.GetRight = function() error('secret') end")
+        self.gear_hover(row)
+        self.assertEqual(point(), ("TOPLEFT", True, "TOPRIGHT"))
+        L.run("ForeverArmouryGearPanel.GetRight = nil; UIParent.GetRight = nil")
         # leaving hides it
         self.gear_hover(row, "OnLeave")
         self.assertFalse(L.eval("TIP.shown"))
