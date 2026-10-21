@@ -2,8 +2,8 @@
      then the ones coming, each as the game's item link with where it comes from under it. Gear.lua says which pieces
      those are; the game names the items from their ids (GetItemInfo), so the addon carries no item text. Each row is a
      button: hovering it shows the game's own tooltip for the item to the right of the panel, with where it comes from
-     and the level the route has it at (the game's comparison with what's worn goes under it when it would cover the panel),
-     and shift-click links the item in chat. ]]
+     and the level the route has it at (the game's comparison with what's worn goes in a row beside it when it would
+     cover the panel), and shift-click links the item in chat. ]]
 
 local _, FA = ...
 local Gear = FA.Gear
@@ -34,15 +34,17 @@ end
 local hovered
 
 --[[ The game's comparison with what's worn (ShoppingTooltip1, and 2 for a second piece) goes beside the tooltip, on the
-     left of it when the screen has no room on the right, which is over the panel's list. Then they stack under the
-     tooltip instead. The game places them in TooltipComparisonManager:AnchorShoppingTooltips, which shows them and then sets
-     their points, each time it builds or rebuilds the comparison (a rebuild, when an item's data arrives, shows nothing
-     anew), so this runs after that call, and once more after our Show() in case the position wasn't there yet. A client
-     that won't give a position, or errors on it, keeps the game's placement.
-     Each comparison tooltip carries a CompareHeader ("Equipped", "If equipped together"), a frame that hangs above the
-     tooltip's top edge (22 tall in the game's template, anchored to the tooltip's top left). Stacked flush under the one
-     above, the tooltip would sit right over the header and cut the label off, so each hangs the header's height plus a
-     small gap below the one above it. ]]
+     left of it when the screen has no room on the right, which is over the panel's list. Then they go in a row instead,
+     as the game lays them out when it has room: the first right of the tooltip, the second right of the first, 4 px
+     between. (Each comparison's "Equipped" header hangs above its top edge, so a row leaves it clear.) The row as a whole
+     must still fit the screen: when the tooltip's left (the panel's right edge, where it hangs) plus the widths of the
+     tooltip, the comparisons shown and the gaps passes the screen's right edge, the tooltip's point to the panel moves
+     left by the overflow, so the last comparison ends at the edge, top unchanged, and the comparisons follow it. The
+     offset is worked out anew on every hover. The game places them in TooltipComparisonManager:AnchorShoppingTooltips,
+     which shows them and then sets their points, each time it builds or rebuilds the comparison (a rebuild, when an
+     item's data arrives, shows nothing anew), so this runs after that call, and once more after our Show() in case the
+     position wasn't there yet. A client that won't give a position, or errors on it, keeps the game's placement; one
+     that gives no widths or screen edge keeps the tooltip where it hangs. ]]
 local function overPanel(tip)
   local ok, covers = pcall(function()
     local left, edge = tip:GetLeft(), panel:GetRight()
@@ -51,14 +53,27 @@ local function overPanel(tip)
   return ok and covers
 end
 
-local HEADER_HEIGHT, HEADER_GAP = 22, 4   -- the game's CompareHeader height, when the frame can't say; the space under what's above
+local COMPARE_GAP = 4   -- between the tooltip and a comparison, and between the two
+local shifted = 0       -- how far left of the panel's edge the tooltip hangs now
 
-local function headerHeight(tip)
-  local ok, height = pcall(function()
-    local header = tip.CompareHeader
-    if type(header) == "table" and header:IsShown() then return header:GetHeight() end
+--[[ How far the row passes the screen's right edge, or nil when the client won't say. ]]
+local function rowOverflow(shown)
+  local ok, overflow = pcall(function()
+    local width = GameTooltip:GetWidth()
+    for _, tip in ipairs(shown) do width = width + COMPARE_GAP + tip:GetWidth() end
+    local left = panel:GetRight()
+    local edge = UIParent:GetRight()
+    if type(edge) ~= "number" and GetScreenWidth then edge = GetScreenWidth() end
+    if type(width) ~= "number" or type(left) ~= "number" or type(edge) ~= "number" then return nil end
+    return left + width - edge
   end)
-  return ok and type(height) == "number" and height > 0 and height or HEADER_HEIGHT
+  return ok and overflow or nil
+end
+
+local function hangTooltip(x)
+  GameTooltip:ClearAllPoints()
+  GameTooltip:SetPoint("TOPLEFT", panel, "TOPRIGHT", x, 0)
+  shifted = x
 end
 
 local function stackComparison()
@@ -71,12 +86,14 @@ local function stackComparison()
     end
   end
   if not over then return end
-  local above = GameTooltip
+  local before = GameTooltip
   for _, tip in ipairs(shown) do
     tip:ClearAllPoints()
-    tip:SetPoint("TOPLEFT", above, "BOTTOMLEFT", 0, -(headerHeight(tip) + HEADER_GAP))
-    above = tip
+    tip:SetPoint("TOPLEFT", before, "TOPRIGHT", COMPARE_GAP, 0)
+    before = tip
   end
+  local overflow = rowOverflow(shown)
+  if overflow and (overflow > 0 or shifted ~= 0) then hangTooltip(overflow > 0 and -overflow or 0) end
 end
 
 local comparisonHooked
@@ -102,8 +119,7 @@ local function showTooltip(row)
   hookComparison()   -- if the game's manager wasn't there when the character window hooked
   GameTooltip:SetOwner(row, "ANCHOR_NONE")
   hovered = row
-  GameTooltip:ClearAllPoints()
-  GameTooltip:SetPoint("TOPLEFT", panel, "TOPRIGHT", 0, 0)
+  hangTooltip(0)
   local drawn = GameTooltip.SetItemByID and pcall(GameTooltip.SetItemByID, GameTooltip, piece.id)
   if not drawn then drawn = pcall(GameTooltip.SetHyperlink, GameTooltip, row.link or ("item:" .. piece.id)) end
   if not drawn then GameTooltip:SetText((itemLink(piece.id))) end
