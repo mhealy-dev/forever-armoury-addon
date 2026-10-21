@@ -295,7 +295,8 @@ end
 function FA.Refresh()
   if not panel then return end
   local f = Talents.Frame()
-  if not FA.PartOn("plan") or (f and not f:IsShown()) then
+  FA.SyncWindowButton("plan")
+  if not FA.PanelWanted("plan") or (f and not f:IsShown()) then
     panel:Hide()
     if strip then strip:Hide() end
     lightTalent(nil)
@@ -366,6 +367,7 @@ function FA.HookTalentFrame()
   if not f then return end
   hooked = true
   makePanel()
+  if window ~= UIParent then FA.WindowButton("plan", window) end
   f:HookScript("OnShow", FA.Refresh)
   f:HookScript("OnHide", FA.Refresh)
   if f.LoadTalentTreeInternal then hooksecurefunc(f, "LoadTalentTreeInternal", FA.RefreshSoon) end
@@ -374,7 +376,15 @@ function FA.HookTalentFrame()
   FA.Refresh()
 end
 
-function FA.ToggleTalents() Talents.Toggle() end
+--[[ /fa: the talent window, with the panel beside it; a panel that was put away comes back, as /fa gear's does. ]]
+function FA.ToggleTalents()
+  if not FA.PanelShown("plan") then
+    local f = Talents.Frame()
+    if f and f:IsShown() then FA.SetPanelShown("plan", true); return end
+    FA.db.shown.plan = true
+  end
+  Talents.Toggle()
+end
 
 --[[ ---- the import box ---- ]]
 local function makeImportBox()
