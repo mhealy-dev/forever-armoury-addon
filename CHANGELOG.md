@@ -2,6 +2,14 @@
 
 ## 0.5.1 (unreleased)
 
+The talent strip fills the window's height and scrolls (forever-armoury #1593):
+
+- **Bigger icons that use the strip's height.** The strip is as tall as the talent window (about 850 px on the live client) but showed 3 taken, the next and 5 coming as 34 px icons. Now the icons are **44 px** to start, a setting from 34 to 56 (`strip.size`, a slider on the settings page beside the other two), the strip is 14 px wider than they are, and the glow, the check, the gold border, the level badge and the text on the icons (the `r/m`, the badge's level, **Now** or the level under the next one) scale with the size. The strip shows as many points as its height holds: `floor((height - padding) / (size + gap))`, read from the strip itself once it is anchored (850 px when the game hasn't laid it out yet, and drawn again when it does), so a build that fits is shown whole, taken points faded, in its order.
+- **A build that doesn't fit scrolls.** The mouse wheel over the strip moves it one icon a notch, and a small up and a down arrow at its ends (shown only then) move it a page less one. The **⋮** under the last icon still says how many points follow. `FA.StripPlan(progress, offset, count)` now answers the points from an offset, how many are above and below, where the next sits and how many the build has.
+- **The view starts at the next talent.** The two counts on the settings page now say where it starts, not how many to show: the taken points above the next (3 to start) and the coming points kept in view below it (5), when the strip has room for both. When your points change (a point spent by the strip, Apply or the window, or `TRAIT_CONFIG_UPDATED`), or you follow another build, the view moves to the next again, unless you have scrolled it: then it stays where you left it until your points change. Moving either count, or the size, puts the view back at the next.
+- The hover (#1563) and the click (#1564) work on every icon at every offset: the icons are drawn again, and the icon under the mouse keeps its light and tooltip, as the view moves.
+- What only the beta can show: the strip's real height and how many 44 px icons fit beside `PlayerSpellsFrame`, the wheel on the live client, and how the scaled glow looks at 56 px.
+
 The leveling gear routes are built in (forever-armoury #1591):
 
 - **`/fa gear` works with nothing pasted.** The addon ships all 54 of the site's leveling routes (nine classes, three specs, both sides) in `Data/Routes.lua`, so a fresh install shows the route for the character's class, side and spec. The panel says "Route shipped with the addon."

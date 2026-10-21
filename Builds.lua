@@ -198,18 +198,15 @@ function FA.Progress(build, view)
     due = math.max(0, math.min(#points, level - first + 1)) }
 end
 
---[[ What the strip beside the talent window shows of a build's progress (Progress's answer): the last `past` points
-     taken, the next, then up to `coming` more, each as { kind = "taken" | "next" | "coming", n, talent, rank, level }; the
-     next also says now, whether its point can be spent (its level has come, and the spec has no point off the build).
-     A pick no talent sits under is an entry of kind "unplaced" in its place in the order, with no talent and its tab and
-     cell. Answers the list and how many points follow it. A build that's off its order shows the points Progress could place. ]]
-function FA.StripPlan(p, past, coming)
-  local out = {}
-  local function add(kind, point)
-    local e = { kind = kind, n = point.n, talent = point.talent, rank = point.rank, level = point.level, tab = point.tab, cell = point.cell }
-    out[#out + 1] = e
-    return e
-  end
+--[[ What the strip beside the talent window shows of a build's progress (Progress's answer): the whole build in its order
+     (the points taken, the next, the ones coming), from the point `offset` points down the order, `count` of them, each as
+     { kind = "taken" | "next" | "coming", n, talent, rank, level }; the next also says now, whether its point can be
+     spent (its level has come, and the spec has no point off the build). A pick no talent sits under is an entry of kind
+     "unplaced" in its place in the order, with no talent and its tab and cell. Answers the list; how many points come
+     above it (the offset, held to what the build has room for) and below it; where the next sits in the whole order
+     (nil once every point is taken); and how many points the whole order has. Asking for none (count 0) is how the
+     last three are had without the list. A build that's off its order shows the points Progress could place. ]]
+function FA.StripPlan(p, offset, count)
   --[[ the points before the next one (taken, and picks off the trees) and those after it, each in the build's order ]]
   local nextN = p.next and p.next.n or math.huge
   local before, after = {}, {}
@@ -222,10 +219,20 @@ function FA.StripPlan(p, past, coming)
   local function byN(a, b) return a.point.n < b.point.n end
   table.sort(before, byN)
   table.sort(after, byN)
-  for i = math.max(1, #before - past + 1), #before do add(before[i].kind, before[i].point) end
-  if p.next then add("next", p.next).now = p.next.n <= p.due and p.off == 0 end
-  for i = 1, math.min(#after, coming) do add(after[i].kind, after[i].point) end
-  return out, math.max(0, #after - coming)
+  local order = before
+  if p.next then order[#order + 1] = { kind = "next", point = p.next } end
+  local nextAt = p.next and #order or nil
+  for _, x in ipairs(after) do order[#order + 1] = x end
+  local total = #order
+  offset = math.max(0, math.min(math.floor(offset or 0), total - count))
+  local out = {}
+  for i = offset + 1, math.min(total, offset + count) do
+    local x = order[i]
+    local point = x.point
+    out[#out + 1] = { kind = x.kind, n = point.n, talent = point.talent, rank = point.rank, level = point.level, tab = point.tab, cell = point.cell,
+      now = x.kind == "next" and (point.n <= p.due and p.off == 0) or nil }
+  end
+  return out, offset, total - offset - #out, nextAt, total
 end
 
 --[[ What Apply would spend now: the build's points not taken, in order, as many as the character has unspent (and no
