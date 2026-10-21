@@ -3,7 +3,9 @@
      hovering an icon lights its button in the window's tree and shows the game's tooltip, a click on the next icon spends
      it and a shift-click spends everything due. What a plan is, what its buttons are and how a point is spent belong to
      the strip's owner (TalentUI.lua for builds, LegacyUI.lua for Legacy plans); the size and the scroll settings are the
-     same for both (FA.db.strip).
+     same for both (FA.db.strip). The icons sit in slots of one pitch, the label row under each included, so scrolling moves
+     them a slot and nothing else: a thin line between the points taken and the ones coming, the dots and the arrows all
+     have their places in the strip's header and footer.
 
      FA.Strip.New(owner) makes a strip for an owner, a table with:
        name            the strip frame's global name
@@ -41,7 +43,9 @@ local TEMPLATE = BackdropTemplateMixin and "BackdropTemplate" or nil
 local ICON = 34     -- the icon size the strip's proportions are drawn for; the setting scales them
 local STRIP_PAD = 14    -- the strip is this much wider than its icons
 local PAD, GAP, ARROW, DOTS = 12, 4, 18, 16   -- the strip's margin at its ends, between icons, an arrow's height, the dots' height
-local GAP_AFTER = 8     -- between the points taken and the ones coming
+local HEAD = PAD + ARROW        -- the strip's top to its first slot: the up arrow's place is kept whether or not the arrows show
+local FOOT = DOTS + PAD + ARROW -- the last slot's end to the strip's bottom: the dots' place, then the down arrow's
+local SEPARATOR = { 0.75, 0.6, 0.2, 0.8 }   -- the line between the points taken and the ones coming, in the panel border's gold
 local UNDER_GAP = 4     -- between a frame the strip hangs under and the strip's top
 local FALLBACK_H = 850  -- the strip's height when the game hasn't laid it out yet (the talent window's, on the live client)
 local UNKNOWN_ICON = "Interface\\Icons\\INV_Misc_QuestionMark"
@@ -123,11 +127,16 @@ local function sizeIcon(icon, size)
   icon.label:SetPoint("TOP", icon, "BOTTOM", 0, -1)
 end
 
---[[ How many icons fit the strip's height at a size, with or without the arrows (and the dots) a scrolling strip needs:
-     the margins, the label under the next icon and the gap after the taken ones come off the height first. ]]
-local function fits(height, size, arrows)
-  local pad = 2 * PAD + fontPx(size) + 2 + GAP_AFTER + (arrows and 2 * ARROW + DOTS or 0)
-  return math.max(1, math.floor((height - pad) / (size + GAP)))
+--[[ The strip is a column of slots of one pitch: the icon, the row under it for the "Now" or level label (kept whether or
+     not the icon has one) and the gap. Slot i sits at the same distance from the strip's top at every scroll position, so
+     nothing moves but the icons' contents. ]]
+local function pitch(size) return size + fontPx(size) + 2 + GAP end
+local function slotY(i, size) return HEAD + (i - 1) * pitch(size) end
+
+--[[ How many slots fit the strip's height at a size: what the header and the footer keep (the arrows' and the dots' places,
+     the same whether the arrows show) comes off the height first. ]]
+local function fits(height, size)
+  return math.max(1, math.floor((height - HEAD - FOOT) / pitch(size)))
 end
 
 --[[ Where the view starts when the player hasn't scrolled it: the setting's count of taken points above the next, and at
@@ -277,6 +286,9 @@ local function makeFrame(self)
   strip.down:SetSize(ARROW, ARROW)
   strip.down:SetPoint("BOTTOM", 0, 8)
   strip.down:SetScript("OnClick", function() self:Scroll(math.max(1, self.shownCount - 1)) end)
+  strip.divider = strip:CreateTexture(nil, "ARTWORK")   -- between the points taken and the ones coming
+  strip.divider:SetColorTexture(unpack(SEPARATOR))
+  strip.divider:SetHeight(1)
   strip.more = CreateFrame("Frame", nil, strip)   -- three dots, drawn here since the font may not have a vertical ellipsis
   strip.more:SetSize(ICON, DOTS)
   strip.more:EnableMouse(true)
@@ -325,8 +337,8 @@ function Methods:Refresh()
   if type(height) ~= "number" or height <= 0 then height = (owner.anchor()):GetHeight() end
   if type(height) ~= "number" or height <= 0 then height = FALLBACK_H end
   self.usedHeight = height
-  local arrows = total > fits(height, size, false)
-  local count = arrows and fits(height, size, true) or total
+  local count = math.min(total, fits(height, size))
+  local arrows = total > count
   --[[ a new plan or a point spent, and the strip follows the next point again ]]
   local now = owner.refreshKey()
   if now ~= self.seen then self.scrolled = false; self.seen = now end
@@ -338,7 +350,7 @@ function Methods:Refresh()
   strip.down:SetShown(arrows)
   if above > 0 then strip.up:Enable() else strip.up:Disable() end
   if below > 0 then strip.down:Enable() else strip.down:Disable() end
-  local y = PAD + (arrows and ARROW or 0)
+  local gapAt   -- the slot of the first point after the ones taken and the next, where the separator is drawn above
   for i, e in ipairs(entries) do
     local icon = strip.icons[i]
     if not icon then icon = makeIcon(self); strip.icons[i] = icon end
@@ -355,24 +367,32 @@ function Methods:Refresh()
     icon.levelBg:SetShown(badged)
     icon.level:SetShown(badged)
     icon.level:SetText(badged and e.badge or "")
-    icon.label:SetShown(e.kind == "next")
-    icon.label:SetText(e.kind == "next" and e.label or "")
+    local label = e.kind == "next" and e.label or ""
+    icon.label:SetShown(label ~= "")
+    icon.label:SetText(label)
     self:Clickable(icon)
-    if e.kind == "coming" and entries[i - 1] and entries[i - 1].kind ~= "coming" then y = y + GAP_AFTER end   -- a gap after the next one
+    local before = entries[i - 1] and entries[i - 1].kind
+    if (e.kind == "coming" or e.kind == "unplaced") and (before == "taken" or before == "next") then gapAt = gapAt or i end   -- the first boundary only: an unplaced pick among the coming ones isn't another
     icon:ClearAllPoints()
-    icon:SetPoint("TOP", strip, "TOP", 0, -y)
+    icon:SetPoint("TOP", strip, "TOP", 0, -slotY(i, size))
     icon:Show()
-    y = y + size + GAP + (e.kind == "next" and fontPx(size) + 2 or 0)
   end
   for i = #entries + 1, #strip.icons do
     strip.icons[i].entry = false
     strip.icons[i]:Hide()
   end
+  --[[ the separator is drawn in the pitch between the two slots, half a gap above the lower one, so it moves nothing ]]
+  strip.divider:SetShown(gapAt ~= nil)
+  if gapAt then
+    strip.divider:SetWidth(size)
+    strip.divider:ClearAllPoints()
+    strip.divider:SetPoint("TOP", strip, "TOP", 0, -(slotY(gapAt, size) - GAP / 2))
+  end
   strip.more.count = below
   strip.more:SetShown(below > 0)
   strip.more:SetWidth(size)
   strip.more:ClearAllPoints()
-  strip.more:SetPoint("TOP", strip, "TOP", 0, -y)
+  strip.more:SetPoint("TOP", strip, "TOP", 0, -slotY(count + 1, size))   -- the footer slot, under the last slot
   if self.hovering and self.hovering.entry then
     self:Light(self.hovering.entry)
     self:Tip(self.hovering)
