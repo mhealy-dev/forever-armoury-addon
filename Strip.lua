@@ -7,8 +7,9 @@
 
      FA.Strip.New(owner) makes a strip for an owner, a table with:
        name            the strip frame's global name
-       anchor()        the frame the strip hangs on, and how far its left edge sits from that frame's right edge (-2 for
-                       the strip to touch it, more to clear a window's side tabs)
+       anchor()        the frame the strip hangs on, how far its left edge sits from that frame's right edge (-2 for
+                       the strip to touch it), and how far below the frame's top it starts (nil or 0 for the top; the
+                       height of a window's side tabs to hang under them)
        plan(offset, count)  the plan from the point `offset` points down its order, `count` of them: the list, the offset
                        (held to what fits), how many points follow, where the next sits in the whole order (nil once every
                        point is taken) and how many points the whole order has. A count of 0 gives the last two without
@@ -249,10 +250,10 @@ end
 
 local function makeFrame(self)
   local owner = self.owner
-  local anchor, by = owner.anchor()
+  local anchor, by, below = owner.anchor()
   local strip = CreateFrame("Frame", owner.name, anchor, TEMPLATE)
   strip:SetWidth(ICON + STRIP_PAD)
-  strip:SetPoint("TOPLEFT", anchor, "TOPRIGHT", by, 0)
+  strip:SetPoint("TOPLEFT", anchor, "TOPRIGHT", by, -(below or 0))
   strip:SetPoint("BOTTOMLEFT", anchor, "BOTTOMRIGHT", by, 0)
   strip:SetBackdrop(STRIP_BACKDROP)
   strip:SetFrameStrata("HIGH")

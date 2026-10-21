@@ -1940,6 +1940,9 @@ ForeverArmouryStripSizeLow, ForeverArmouryStripSizeHigh, ForeverArmouryStripSize
 LegacySystemFrame = frame("LegacySystemFrame")
 LegacySystemFrame.LegacyRewardTrackTab = frame("LegacyRewardTrackTab")   -- the side tabs hang off the window's right edge
 LegacySystemFrame.LegacyRewardTrackTab.GetWidth = function() return 42 end
+LegacySystemFrame.LegacyTreeTab = frame("LegacyTreeTab")                 -- the lowest tab ends 300 below the window's top
+LegacySystemFrame.GetTop = function() return 1000 end
+LegacySystemFrame.LegacyTreeTab.GetBottom = function() return 700 end
 LegacySystemFrame.TreePage = { LegacyTreeTraitPanel = frame("LegacyTreeTraitPanel") }
 LBUTTONS, LSHOWN_TREE = {}, 1187
 LegacySystemFrame.TreePage.LegacyTreeTraitPanel.GetTalentButtonByNodeID = function(self, nodeID)
@@ -3783,8 +3786,9 @@ class UI(unittest.TestCase):
         # it sits beside the Legacy window
         self.assertTrue(L.eval("ForeverArmouryLegacyPanel.points[1][2] == LegacySystemFrame"))
         self.assertEqual(L.eval("ForeverArmouryLegacyPanel.points[1][3]"), "TOPRIGHT")
-        # and clear of the window's side tabs, which are 42 wide here and start at its edge
-        self.assertGreaterEqual(L.eval("ForeverArmouryLegacyPanel.points[1][4]"), 42)
+        # on its edge, under the window's side tabs: the trees tab's bottom is 300 below the window's top here
+        self.assertEqual(L.eval("ForeverArmouryLegacyPanel.points[1][4]"), -2)
+        self.assertEqual(L.eval("ForeverArmouryLegacyPanel.points[1][5]"), -304)
 
     def test_import_follow_light_and_apply_a_legacy_plan(self):
         L.run("LEGACY_ON = true")
@@ -4052,13 +4056,15 @@ class UI(unittest.TestCase):
         self.assertEqual(self.lstrip(), self.GATHERER_STRIP)
         self.assertEqual(len(self.lstrip()), 16)
         self.assertEqual(L.eval("ForeverArmouryLegacyStrip.more.shown"), False)
-        # it hangs on the window's right edge past the side tabs, a strip's width wide; the panel against the strip
+        # it hangs on the window's right edge under the side tabs, a strip's width wide; the panel against the strip
         self.assertEqual(L.eval("ForeverArmouryLegacyStrip.width"), 58)
         self.assertTrue(L.eval("ForeverArmouryLegacyStrip.points[1][2] == LegacySystemFrame"))
         self.assertEqual(L.eval("ForeverArmouryLegacyStrip.points[1][3]"), "TOPRIGHT")
-        self.assertEqual(L.eval("ForeverArmouryLegacyStrip.points[1][4]"), 42)
+        self.assertEqual(L.eval("ForeverArmouryLegacyStrip.points[1][4]"), -2)
+        self.assertEqual(L.eval("ForeverArmouryLegacyStrip.points[1][5]"), -304)
         self.assertEqual(L.eval("ForeverArmouryLegacyStrip.points[2][3]"), "BOTTOMRIGHT")
         self.assertTrue(L.eval("ForeverArmouryLegacyPanel.points[1][2] == ForeverArmouryLegacyStrip"))
+        self.assertEqual(L.eval("ForeverArmouryLegacyPanel.points[1][5]"), 0)   # level with the strip's top
         self.assertEqual(L.eval("#ForeverArmouryLegacyPanel.points"), 1)   # moved, not added to
         # the talent window's strip is its own
         self.assertFalse(L.eval("ForeverArmouryTalentStrip.shown"))
@@ -4068,7 +4074,7 @@ class UI(unittest.TestCase):
         L.run("FA.Legacy.SetActive(nil); FA.RefreshLegacy()")
         self.assertFalse(L.eval("ForeverArmouryLegacyStrip.shown"))
         self.assertTrue(L.eval("ForeverArmouryLegacyPanel.points[1][2] == LegacySystemFrame"))
-        self.assertGreaterEqual(L.eval("ForeverArmouryLegacyPanel.points[1][4]"), 42)
+        self.assertEqual(L.eval("ForeverArmouryLegacyPanel.points[1][5]"), -304)
 
     def test_the_legacy_strip_marks_the_ranks_the_account_has_as_taken(self):
         self.follow_legacy()

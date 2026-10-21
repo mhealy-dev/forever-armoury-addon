@@ -5,8 +5,8 @@
      follows with each perk's ranks had and wanted, the points available against the seasonal cap, and an Apply that
      buys what's next. Legacy.lua says what that is and does the buying; the next perk of each tree is lit in the
      window's tree with the talent window's glow (Strip.lua's FA.LightButtons), and only when the tree shows its button:
-     the window shows one tree at a time. The strip and the panel sit past the window's side tabs, which are how the
-     person gets to the trees page. ]]
+     the window shows one tree at a time. The strip and the panel hang on the window's right edge under its side tabs,
+     which are how the person gets to the trees page. ]]
 
 local _, FA = ...
 local Legacy = FA.Legacy
@@ -19,11 +19,11 @@ local PLAN_ROWS, PERK_ROWS = 5, 12   -- plans shown at once (the list scrolls pa
 local PLAN_Y, PERK_H = 160, 16
 local HEADER_Y = 140   -- the plans section's header row, above its list
 local PLUS, MINUS = "Interface\\Buttons\\UI-PlusButton-Up", "Interface\\Buttons\\UI-MinusButton-Up"
-local TAB_WIDTH = 40   -- the Legacy window's side tabs, when the game won't say how wide they are
+local TABS_BOTTOM = 270   -- how far below the Legacy window's top its side tabs end, when the game won't say
 local GREEN, GOLD, GREY, RED = "|cff40ff40", "|cffffd100", "|cff909090", "|cffff6060"
 local panel, strip, window, hooked
 local panelBy         -- what the panel is anchored to: the strip, or the window when there is no strip
-local tabWidth        -- how far past the window's right edge its side tabs reach
+local tabsBottom      -- how far below the window's top its side tabs end: the strip and the panel start there
 local offset = 0      -- how many plans are scrolled off the top of the list
 local glows = {}      -- perk button -> its highlight
 local followed, progress, sequence, nowOk   -- the strip's: the plan, where the account is on it, its ranks in order, and whether a point can be spent now
@@ -78,7 +78,7 @@ end
 local owner = {
   name = "ForeverArmouryLegacyStrip",
   verb = "buy",
-  anchor = function() return window, tabWidth end,
+  anchor = function() return window, -2, tabsBottom end,
   refreshKey = function() return tostring(followed and followed.id) .. ":" .. (progress and progress.spent or "") end,
   button = function(e) return Legacy.Button(e) end,
 }
@@ -123,14 +123,25 @@ function owner.spend()
 end
 function owner.spendAll() FA.AskApplyLegacy() end
 
---[[ The panel sits against the strip while there is one to show, else against the window past its side tabs. ]]
+--[[ The panel sits against the strip while there is one to show, else against the window under its side tabs. ]]
 local function anchorPanel(by)
   if panelBy == by then return end
   panelBy = by
   panel:ClearAllPoints()
   if window == UIParent then panel:SetPoint("CENTER")
-  elseif by == window then panel:SetPoint("TOPLEFT", window, "TOPRIGHT", tabWidth, -20)
-  else panel:SetPoint("TOPLEFT", by, "TOPRIGHT", -2, -20) end
+  elseif by == window then panel:SetPoint("TOPLEFT", window, "TOPRIGHT", -2, -tabsBottom)
+  else panel:SetPoint("TOPLEFT", by, "TOPRIGHT", -2, 0) end
+end
+
+--[[ Where the window's side tabs end (the reward track, the challenges and the trees hang off its right edge from
+     y = -60 down, the trees tab lowest): below the lowest tab's bottom, read from the game when the window is laid out,
+     else about 270. The strip and the panel hang under them, so the tabs stay clickable. ]]
+local function tabsEnd()
+  local tab = window ~= UIParent and window.LegacyTreeTab
+  local top = window.GetTop and tonumber(window:GetTop())
+  local bottom = type(tab) == "table" and tab.GetBottom and tonumber(tab:GetBottom())
+  if top and bottom and top > bottom then return math.floor(top - bottom) + 4 end
+  return TABS_BOTTOM
 end
 
 --[[ The strip for the followed plan and where the account is on it (Progress's answer, nil without a plan that can be
@@ -152,11 +163,7 @@ end
 
 local function makePanel()
   window = _G.LegacySystemFrame or UIParent
-  --[[ the window's side tabs (the reward track, the challenges and the trees) hang off its right edge from y = -60
-       down, so the strip and the panel start past them: the width of one, read now, else about 40 ]]
-  local tab = window ~= UIParent and window.LegacyRewardTrackTab
-  tabWidth = type(tab) == "table" and tab.GetWidth and tonumber(tab:GetWidth()) or 0
-  if tabWidth <= 0 then tabWidth = TAB_WIDTH end
+  tabsBottom = tabsEnd()
   sequence = {}
   if window ~= UIParent then strip = FA.Strip.New(owner) end
   panel = CreateFrame("Frame", "ForeverArmouryLegacyPanel", window, TEMPLATE)
