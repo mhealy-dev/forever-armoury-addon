@@ -15,6 +15,7 @@ Talents.lua
 Builds.lua
 TalentUI.lua
 GearCode.lua
+Data/Routes.lua
 Gear.lua
 GearUI.lua
 LegacyCode.lua
