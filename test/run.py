@@ -2484,7 +2484,7 @@ class UI(unittest.TestCase):
     def setUpClass(cls):
         L.run("RESET('traits')")
         L.run(UI_STUB)
-        for name in ("TalentUI.lua", "GearUI.lua", "LegacyUI.lua"):
+        for name in ("Strip.lua", "TalentUI.lua", "GearUI.lua", "LegacyUI.lua"):
             L.run("""
               local f = assert(io.open(ROOT .. '/%s', 'rb')); local src = f:read('*a'); f:close()
               assert((loadstring or load)(src, '@%s'))('ForeverArmoury', FA)

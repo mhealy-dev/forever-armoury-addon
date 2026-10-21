@@ -5,7 +5,8 @@
        BuildCode.lua   a build code as the site writes it, read and written (FA.Code)
        Talents.lua     the game's talents as three trees of cells, and its talent window (FA.Talents)
        Builds.lua      the saved builds, the character's active one, and where it is on it (FA.Progress)
-       TalentUI.lua    the panel and the strip of icons beside the talent window, the highlights, the import box, the settings
+       Strip.lua       the strip of icons beside a window, shared by the talent window and the Legacy window, and the highlights in the trees (FA.Strip)
+       TalentUI.lua    the panel beside the talent window and its side of the strip, the import box, the settings
        GearCode.lua    a gear route code as the site writes it, read and written (FA.GearCode)
        Data/Routes.lua the gear routes the addon ships, written by tools/routes.py (FA.RouteData)
        Gear.lua        the shipped and the saved gear routes, the character's, and the next pieces at its level (FA.Gear)
