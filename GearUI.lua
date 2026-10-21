@@ -2,7 +2,8 @@
      then the ones coming, each as the game's item link with where it comes from under it. Gear.lua says which pieces
      those are; the game names the items from their ids (GetItemInfo), so the addon carries no item text. Each row is a
      button: hovering it shows the game's own tooltip for the item to the right of the panel, with where it comes from
-     and the level the route has it at, and shift-click links the item in chat. ]]
+     and the level the route has it at (the game's comparison with what's worn goes under it when it would cover the panel),
+     and shift-click links the item in chat. ]]
 
 local _, FA = ...
 local Gear = FA.Gear
@@ -29,31 +30,51 @@ local function itemLink(id)
   return "|cff808080item " .. id .. "|r", false
 end
 
---[[ Which side of the panel the tooltip goes: the right, unless the screen has no room there for it and the game's
-     comparison with what's worn (the game then puts the comparison to the left of the tooltip, over the panel); then
-     the tooltip goes left of the panel and the comparison left of that. A client that won't give the positions, or
-     errors on them, gets the right. ]]
-local TOOLTIPS_ROOM = 620   -- two tooltips side by side
-local function tooltipSide()
-  local ok, room = pcall(function()
-    local right, edge = panel:GetRight(), UIParent:GetRight()
-    if type(right) ~= "number" or type(edge) ~= "number" then return nil end
-    return edge - right
+--[[ The row whose tooltip is up, so a comparison the game shows can be told from one shown for another tooltip. ]]
+local hovered
+
+--[[ The game's comparison with what's worn (ShoppingTooltip1, and 2 for a second piece) goes beside the tooltip, on the
+     left of it when the screen has no room on the right, which is over the panel's list. Then they stack under the
+     tooltip instead. The game places them while it draws the item, before our Show(), and again as they show, so this runs
+     on their OnShow and after Show(). A client that won't give a position, or errors on it, keeps the game's placement. ]]
+local function overPanel(tip)
+  local ok, covers = pcall(function()
+    local left, edge = tip:GetLeft(), panel:GetRight()
+    return type(left) == "number" and type(edge) == "number" and left < edge - 1
   end)
-  if ok and type(room) == "number" and room < TOOLTIPS_ROOM then return "left" end
-  return "right"
+  return ok and covers
 end
 
---[[ The hover: the game's tooltip for the item, beside the panel (tooltipSide says which side), then where the piece comes
-     from and the level the route has it at. SetItemByID, else the item's link, else its name and id, so the hover shows
-     something whatever the client has. ]]
+local function stackComparison()
+  local first, second = ShoppingTooltip1, ShoppingTooltip2
+  if not (hovered and first and first:IsShown()) and not (hovered and second and second:IsShown()) then return end
+  if GameTooltip.IsOwned and not GameTooltip:IsOwned(hovered) then return end
+  if not (first and first:IsShown() and overPanel(first)) and not (second and second:IsShown() and overPanel(second)) then return end
+  if first then
+    first:ClearAllPoints()
+    first:SetPoint("TOPLEFT", GameTooltip, "BOTTOMLEFT", 0, -4)
+  end
+  if first and second and second:IsShown() then
+    second:ClearAllPoints()
+    second:SetPoint("TOPLEFT", first, "BOTTOMLEFT", 0, 0)
+  end
+end
+
+local function hideTooltip()
+  hovered = nil
+  GameTooltip:Hide()
+end
+
+--[[ The hover: the game's tooltip for the item, to the right of the panel, then where the piece comes from and the level
+     the route has it at. SetItemByID, else the item's link, else its name and id, so the hover shows something whatever
+     the client has. ]]
 local function showTooltip(row)
   local piece = row.piece
   if not piece then return end
   GameTooltip:SetOwner(row, "ANCHOR_NONE")
+  hovered = row
   GameTooltip:ClearAllPoints()
-  if tooltipSide() == "left" then GameTooltip:SetPoint("TOPRIGHT", panel, "TOPLEFT", 0, 0)
-  else GameTooltip:SetPoint("TOPLEFT", panel, "TOPRIGHT", 0, 0) end
+  GameTooltip:SetPoint("TOPLEFT", panel, "TOPRIGHT", 0, 0)
   local drawn = GameTooltip.SetItemByID and pcall(GameTooltip.SetItemByID, GameTooltip, piece.id)
   if not drawn then drawn = pcall(GameTooltip.SetHyperlink, GameTooltip, row.link or ("item:" .. piece.id)) end
   if not drawn then GameTooltip:SetText((itemLink(piece.id))) end
@@ -61,6 +82,7 @@ local function showTooltip(row)
   GameTooltip:AddLine(Gear.SourceText(piece), 0.7, 0.7, 0.7, true)
   GameTooltip:AddLine("On the route at level " .. piece.level .. ".", 0.7, 0.7, 0.7, true)
   GameTooltip:Show()
+  stackComparison()
 end
 
 --[[ Shift-click (the game's chat-link click) puts the item's link in the chat box. ]]
@@ -138,8 +160,8 @@ local function makePanel()
     row.from:SetWordWrap(false)
     row.from:SetTextColor(0.7, 0.7, 0.7)
     row:SetScript("OnEnter", showTooltip)
-    row:SetScript("OnLeave", function() GameTooltip:Hide() end)
-    row:SetScript("OnHide", function(self) if GameTooltip.IsOwned and GameTooltip:IsOwned(self) then GameTooltip:Hide() end end)
+    row:SetScript("OnLeave", hideTooltip)
+    row:SetScript("OnHide", function(self) if GameTooltip.IsOwned and GameTooltip:IsOwned(self) then hideTooltip() end end)
     row:SetScript("OnClick", clickRow)
     panel.rows[i] = row
   end
@@ -218,6 +240,8 @@ function FA.HookCharacterFrame()
     CharacterFrame:HookScript("OnShow", FA.RefreshGear)
     CharacterFrame:HookScript("OnHide", FA.RefreshGear)
   end
+  if ShoppingTooltip1 then ShoppingTooltip1:HookScript("OnShow", stackComparison) end
+  if ShoppingTooltip2 then ShoppingTooltip2:HookScript("OnShow", stackComparison) end
   events = CreateFrame("Frame")
   for _, e in ipairs({ "PLAYER_EQUIPMENT_CHANGED", "BAG_UPDATE_DELAYED", "PLAYER_LEVEL_UP", "GET_ITEM_INFO_RECEIVED", "ITEM_DATA_LOAD_RESULT", "QUEST_DATA_LOAD_RESULT" }) do
     pcall(events.RegisterEvent, events, e)
