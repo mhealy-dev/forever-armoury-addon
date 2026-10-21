@@ -2,6 +2,13 @@
 
 ## 0.5.2 (unreleased)
 
+The gear panel ends where the character window does, and its list scrolls (forever-armoury #1606):
+
+- **The panel's bottom is the window's.** The panel is anchored to the window's top right as before and now also by its bottom left to the window's bottom right, so the game keeps the two edges lined up at any scale. Before, it had a fixed height of 526 (12 rows) and hung about 50 units below the window in the beta. With no character window, or one that gives no height, the fixed height stays.
+- **The rows fit the height.** The panel shows as many rows as fit between the top of the list and a 20 margin at the bottom, 32 a row (never fewer than one), worked out when it is laid out and again whenever its size changes (`OnSizeChanged`); rows are made as the height first needs them and the rest are hidden. The window's height is read guarded, as the live client has thrown on some frame reads.
+- **A route longer than the rows scrolls.** The mouse wheel over the panel moves the list by one row, kept in range as the builds list does. The pieces to get now stay first and the order is unchanged. The first row shows a **⋮** when pieces lie above it, and the last **⋮ N more** when N lie below, at the right of the row's second line (a source that is long is cut short before it). When a single row fits and pieces lie both ways, it shows the ones below. The tooltip follows the cursor to the piece the wheel brings under it.
+- What only the beta can show: the panel's bottom edge on the window's at the beta's scale, the number of rows it holds there, and where the markers sit against a long source line.
+
 A button on each window puts the addon's panel away and brings it back (forever-armoury #1604):
 
 - **A small square button, "FA", at the top right of the talent window, the character window and the Legacy window**, left of the window's own close button (its `CloseButton` field, else the global it is known by, such as `CharacterFrameCloseButton`; at the window's top right when there is none). Its tooltip is "Forever Armoury — hide the level plan" (or "the leveling gear", "the Legacy plan"), or "show" when the panel is put away. A click puts the panel and its strip away together, and the next click brings them back. The button is lit gold while the panel is out. The choice is the account's and survives a reload (`shown` in the saved variables, one flag a part, out to start with).
