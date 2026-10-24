@@ -2,6 +2,11 @@
 
 ## 0.5.2 (unreleased)
 
+The leveling gear routes the addon ships are the site's new ones (forever-armoury #1631):
+
+- **Forever's own loot is on the routes.** `Data/Routes.lua` is written again from the site at b2b9d45: 54 routes, 2,610 pieces (2,554 before). They now weigh Forever's own dungeon and quest items, which the old routes' weapon lists left out, such as Durgen's Crescent Axe from the Hall of Thanes as the Alliance Protection warrior's and paladin's main hand at 13, and the loot of Ruins of Lordaeron, Excavation Site: Wetlands and City of Dalaran.
+- **The routes are 36 to 60 pieces.** The shipped-table test now holds a route to the site's own rule, 1 to 80 pieces, rather than the old 37 to 59.
+
 The gear panel ends where the character window does, and its list scrolls (forever-armoury #1606):
 
 - **The panel's bottom is the window's.** The panel is anchored to the window's top right as before and now also by its bottom left to the window's bottom right, so the game keeps the two edges lined up at any scale. Before, it had a fixed height of 526 (12 rows) and hung about 50 units below the window in the beta. With no character window, or one that gives no height, the fixed height stays.

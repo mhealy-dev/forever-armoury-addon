@@ -6,7 +6,7 @@ The second part of the addon, after the level plan (forever-armoury#280): the si
 
 A route is `public/content/route/<class>.json` on the site: one per spec (the talent tree's index, 0 to 2) and side (`alliance` or `horde`), a list of pieces `{ id, level, slot, from }` in the order they are picked up. `from` is `["drop", dungeon, npc]` or `["quest", quest]`. The dungeon is the instance's map id as `public/data/gear.json` numbers it (Deadmines 36, Wailing Caverns 43; Forever's own dungeons are above 2900, The Hall of Thanes 3065), the npc the boss's id, the quest the quest's id. Every drop on the routes today is a dungeon boss. The rules for which piece is worn when are `public/content/route-fit.js`: the piece worn in a slot at a level is the last one picked up by then, and an off hand is put away by a two-handed main hand picked up after it. Item facts are `public/data/gear.json` and the sources' text `public/data/gear-sources.json`; the addon carries none of that, since the game names an item from its id.
 
-The routes have 37 to 59 pieces (the Horde Combat rogue's is the longest), with 17 slots: head, neck, shoulder, back, chest, wrist, hands, waist, legs, feet, finger1, finger2, trinket1, trinket2, mainhand, offhand, ranged.
+The routes have 36 to 60 pieces (the Horde Survival hunter's is the longest), with 17 slots: head, neck, shoulder, back, chest, wrist, hands, waist, legs, feet, finger1, finger2, trinket1, trinket2, mainhand, offhand, ranged.
 
 ## The code
 
