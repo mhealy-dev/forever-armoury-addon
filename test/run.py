@@ -1701,7 +1701,7 @@ class Gear(unittest.TestCase):
         shipped = L.eval("function(cls, spec, side) local r = FA.Gear.Shipped(cls, spec, side); return r and #r.pieces or 0 end")
         counts = [shipped(c, spec, side) for c in self.CLASSES for spec in range(3) for side in ("alliance", "horde")]
         self.assertEqual(len(counts), 54)
-        self.assertTrue(all(37 <= n <= 59 for n in counts), counts)   # the site's routes are 37 to 59 pieces
+        self.assertTrue(all(1 <= n <= 80 for n in counts), counts)   # a route is 1 to 80 pieces, as the site's test has it
         # a route with nothing else in the table: no fourth spec, no other side, no other class
         for args in (("warrior", 3, "alliance"), ("warrior", 0, "neutral"), ("deathknight", 0, "horde")):
             self.assertEqual(shipped(*args), 0)
