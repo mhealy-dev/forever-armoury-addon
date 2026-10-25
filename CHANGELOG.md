@@ -1,6 +1,18 @@
 # Changelog
 
-## 0.5.2 (unreleased)
+## 0.6.0 (2026-10-25)
+
+The first release, on CurseForge. Everything built for the Forever beta so far ships in it:
+
+- **Talents.** Paste a build code from foreverarmoury.app (`FAT1-`, `FAT2-` or `FAT3-`, the last with the Talented rank) and the build sits beside the talent window: a list of your builds and a strip of icons in the build's order, the points taken faded with a check, the next one lit with **Now** or its level, the rest with theirs. Hover lights the talent in the tree, click takes the next point, shift-click or **Apply** spends every point due, all or none, after one confirm. Swap says whether your other spec fits a build, and the trainer's reset says how many points Apply will spend after it. Export gives your class's builds back as codes.
+- **Leveling gear.** The site's 54 leveling routes ship in the addon, so `/fa gear` works with nothing pasted: a panel beside the character window with the pieces to get at your level, each marked when you wear or carry it, then the ones coming, with where each drops. Hover for the tooltip, shift-click to link it. A `FAG1-` route pasted from the site wins for its class, spec and side.
+- **Legacy.** Paste a `FAL1-` plan and it sits beside the Legacy window: the plan's perks in the order they're bought, a strip of their own, hover and click as the talents', and **Apply** across the three trees, one commit a tree, all or none in each.
+- **The windows.** An **FA** button at the top right of the talent, character and Legacy windows puts the addon's panel away and brings it back; each part has a switch and a command (`/fa`, `/fa gear`, `/fa legacy`, `/fa options`); the strips fill the window's height and scroll, and the panels end where the windows do.
+- **Built on the Forever beta** (client 1.60.1.70450). The talent reader works from the game's own node data, a build with a talent it can't place carries on and says which, and `/fa debug` lists every talent as the addon reads it.
+
+What follows was written as each piece landed, before anything was released; all of it is in 0.6.0.
+
+### 0.5.2 (never released; in 0.6.0)
 
 The leveling gear routes the addon ships are the site's new ones (forever-armoury #1631):
 
@@ -43,7 +55,7 @@ The Legacy panel works the way the talents' does (forever-armoury #1594):
 - **The plans list is a section**, as the builds' is: a **Plans (N)** header opens and closes it (closed, it names the plan you follow), open until a plan is followed, and the choice is kept for the account (`legacyPlansOpen`, since plans are the account's). The perks list stays under it, and Apply stays.
 - What only the beta can show: the strip's place and height beside the 920-wide window, the game's names and icons for the perks, that `Legacy.SelectTree` sent from the addon switches the tree and its tab, that the tree's buttons exist right after the switch, a purchase and commit on a tree the window isn't showing, and the blue hover on the Legacy tree's square buttons.
 
-## 0.5.1 (unreleased)
+### 0.5.1 (never released; in 0.6.0)
 
 The talent strip fills the window's height and scrolls (forever-armoury #1593):
 
@@ -72,7 +84,7 @@ Read every talent node, and keep going when a pick doesn't place (forever-armour
 - **`/fa debug nodes`** prints every node of the active config as the game gives it, a line each: id, `posX`, `posY`, `maxRanks`, `totalMaxRanks`, how many `groupIDs` (listed, a tree's group marked with its name) and `entryIDs`, `isVisible`, `type`, `subTreeID`, and the tree the addon gave it and why. `/fa debug` is as it was, and says how many of a tree's nodes went by position.
 - **A pick that doesn't place is marked, not fatal.** A build with a pick no talent of your trees sits under (the site newer than the addon, or a node that did not sort) used to stop at "A talent in this build isn't in your talent trees" with no next talent, no strip and Apply off. Now `FA.Progress` places what it can and lists the rest (`unplaced`, each with its tree and cell). The panel says "N talents of this build aren't in your trees" with their cells (three named, then "and N more") and carries on: the next placeable talent is lit; the strip shows each such pick, in its place in the order, as a greyed question-mark icon whose tooltip names the cell; Apply spends the placeable points in order and stops at the first unplaceable one, saying so in its button tooltip, in the confirm and in chat. Chat says the same when the build is imported, once per build.
 
-## 0.5.0 (unreleased)
+### 0.5.0 (never released; in 0.6.0)
 
 Legacy plans (forever-armoury #1567, from #1566):
 
@@ -105,7 +117,7 @@ The talent column (forever-armoury #1562, #1563):
 - **Hover an icon** and that talent lights in the tree, in blue, beside the next talent's glow, which stays; leaving puts it out. The tooltip is the talent's own spell, then its level and rank, and "Taken" for a rank you have. The highlight is a frame of the addon's, never something written on the game's pooled button.
 - **The panel's build list is a section**: a **Builds (N)** header with a plus or minus opens and closes it, and closed it says which build you follow. It's open until you follow a build and closed after, and what you choose is kept for the character. The panel is as tall as what it shows, with Import and Export at the bottom.
 
-## 0.4.0 (unreleased)
+### 0.4.0 (never released; in 0.6.0)
 
 Small fixes after the first release (forever-armoury #1539):
 
@@ -125,7 +137,7 @@ The leveling gear part (forever-armoury #280, `docs/gear-route.md`):
 - **The panel beside the character window**: the pieces of the route to get at your level, each marked when you wear or carry it, then the ones coming, each as the game's item link with where it comes from (the dungeon and boss, or the quest). The route's spec is the heaviest tree of the build you follow, or one picked with the panel's button.
 - `/fa gear` opens the character window with the panel, `/fa gear on|off` is the part's switch, and the settings page has it too.
 
-## 0.3.0 (unreleased)
+### 0.3.0 (never released; in 0.6.0)
 
 Fixes before the first release (forever-armoury #1535):
 
@@ -139,13 +151,13 @@ Fixes before the first release (forever-armoury #1535):
 - `LICENSE` (MIT), `.pkgmeta` for the CurseForge packager, and the version from the git tag.
 - `scripts/release.sh` builds and checks the release zip from a tag, and uploads it to CurseForge on a flag (forever-armoury #1537).
 
-## 0.2.0 (unreleased)
+### 0.2.0 (never released; in 0.6.0)
 
 - **Apply**: spends your unspent points as the build you follow says, in order, after one confirm; all or none.
 - **Swap**: following a build your points don't fit names the points it lacks, and says whether your other spec fits it or a trainer reset is needed. At the trainer's reset, the addon says how many points Apply will spend afterwards.
 - `/fa apply` and `/fa debug`.
 - Build codes carry the game build the talents are from (`FAT2-70170-…`, forever-armoury #1215), so the site opens a code on the right trees; `FAT1-` codes still read.
 
-## 0.1.0 (unreleased)
+### 0.1.0 (never released; in 0.6.0)
 
 - First version: import build codes from the site, a build list beside the talent window, the next talent of the build you follow lit in the trees, export back to the site, and the level plan part's switch.
