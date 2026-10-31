@@ -153,6 +153,7 @@ file("ForeverArmoury.lua")
 file("BuildCode.lua")
 file("Talents.lua")
 file("Builds.lua")
+file("Napkin.lua")
 ForeverArmouryDB, ForeverArmouryCharDB = nil, nil
 FA.Init()
 FA.class = "warrior"
@@ -649,15 +650,173 @@ class Swap(unittest.TestCase):
         self.assertEqual(L.eval("FA.Talents.Spent()"), 0)
 
 
+NAPKIN_STUB = r"""
+-- The game's words as the tests answer them, and three items in the bags; mute is a word the game won't answer.
+WORDS = {
+  gold = function() return { kind = "money", v = 12375000 } end, level = function() return { kind = "plain", v = 34 } end,
+  xpleft = function() return { kind = "plain", v = 4500 } end, points = function() return { kind = "plain", v = 2 } end,
+  mute = function() return nil end, broken = function() error("boom") end,
+}
+ITEMS = { ["Linen Cloth"] = { count = 68, vendor = 13, stack = 20 }, ["|Hitem:2589::::::::34:::::|h[Linen Cloth]|h"] = { count = 68, vendor = 13, stack = 20 } }
+ENV = {
+  values = WORDS,
+  item = function(l) local i = ITEMS[l]; return i and i.count end,
+  vendor = function(l) local i = ITEMS[l]; return i and i.vendor end,
+  stack = function(l) local i = ITEMS[l]; return i and i.stack end,
+}
+"""
+
+
+class Napkin(unittest.TestCase):
+    """Napkin.lua: sums read, answered and formatted by kind, against words and items the test answers."""
+
+    @classmethod
+    def setUpClass(cls):
+        L.run(NAPKIN_STUB)
+
+    def setUp(self):
+        L.run("RESET('traits'); PLAYER.level = 34")
+
+    def say(self, text, env="ENV"):
+        out = L.eval("function(t, e) local s, err = FA.Napkin.Say(t, e); return s, err or false end")(text, L.eval(env) if env else None)
+        return tuple(out)
+
+    def answer(self, text, env="ENV"):
+        said, err = self.say(text, env)
+        self.assertFalse(err, f"{text}: {err}")
+        read, _, answer = said.rpartition(" = ")
+        return answer, read
+
+    def error(self, text, env="ENV"):
+        said, err = self.say(text, env)
+        self.assertFalse(said, f"{text} answered {said}")
+        return err
+
+    def test_the_table_from_the_readme(self):
+        for text, answer, read in [
+            ("12g 50s × 20", "250g", "12g 50s × 20"),
+            ("12g50s * 20", "250g", "12g 50s × 20"),
+            ("1,250g / 5", "250g", "1,250g ÷ 5"),
+            ("1000g - 5%", "950g", "1,000g - 5%"),
+            ("20% of 1500", "300", "20% × 1,500"),
+            ("(3 × 1.5k) + 200", "4,700", "(3 × 1,500) + 200"),
+            ("2m / 4", "500,000", "2,000,000 ÷ 4"),
+            ("pi × 2^2", "12.57", "π × 2 ^ 2"),
+            ("round(sqrt(2), 3)", "1.414", "round(sqrt(2), 3)"),
+            ("60 - level", "26", "60 - 34"),
+            ("gold", "1,237g 50s", "1,237g 50s"),
+            ("xpleft / 150", "30", "4,500 ÷ 150"),
+            ("points", "2", "2"),
+            ("[Linen Cloth] / 20", "3.4", "[Linen Cloth] ÷ 20"),
+            ("vendor([Linen Cloth]) × [Linen Cloth]", "8s 84c", "vendor([Linen Cloth]) × [Linen Cloth]"),
+            ("stack([Linen Cloth])", "20", "stack([Linen Cloth])"),
+        ]:
+            self.assertEqual(self.answer(text), (answer, read), text)
+
+    def test_numbers_and_operators(self):
+        for text, answer in [
+            ("2(3+4)", "14"), ("3 pi", "9.42"), ("-2^2", "-4"), ("2^3^2", "512"), ("3 x 12g 40s", "37g 20s"),
+            ("0.1 + 0.2", "0.3"), ("1/3", "0.33"), ("2/3*3", "2"), (".5 + 1.", "1.5"), ("1,000,000 + 1", "1,000,001"),
+            ("12 ÷ 4", "3"), ("7 − 2", "5"), ("π", "3.14"), ("+5", "5"), ("-(1 + 2)", "-3"),
+            ("min(3, 1, 2)", "1"), ("max(1g, 50s)", "1g"), ("avg(10, 20)", "15"), ("floor(7/2)", "3"), ("ceil(7/2)", "4"), ("abs(-5)", "5"),
+            ("round(2.5)", "3"), ("round(1250g / 3)", "416g 66s 67c"), ("min(1,250)", "1,250"),
+        ]:
+            self.assertEqual(self.answer(text)[0], answer, text)
+
+    def test_the_kinds(self):
+        for text, answer in [
+            ("20 %", "20%"), ("12.5%", "12.5%"), ("50% + 25%", "75%"), ("10% of 50%", "5%"), ("50% / 25%", "2"), ("50% / 2", "25%"),
+            ("100 - 20%", "80"), ("100 * 20%", "20"), ("100 / 50%", "200"), ("1250g / 5g", "250"), ("1g 5s 3c + 97c", "1g 6s"),
+            ("-1g", "-1g"), ("1g - 2g", "-1g"), ("0g", "0c"), ("1g 50s 25c", "1g 50s 25c"), ("5s", "5s"), ("1g + 99c", "1g 99c"),
+            ("gold - 1,237g", "50s"), ("gold / 1g", "1,237.5"),
+        ]:
+            self.assertEqual(self.answer(text)[0], answer, text)
+
+    def test_item_links_as_the_game_writes_them(self):
+        self.assertEqual(self.answer("|cffffffff|Hitem:2589::::::::34:::::|h[Linen Cloth]|h|r * 2"), ("136", "[Linen Cloth] × 2"))
+        self.assertEqual(self.answer("vendor(|Hitem:2589::::::::34:::::|h[Linen Cloth]|h)")[0], "13c")
+
+    def test_errors_in_words(self):
+        for text, err in [
+            ("12g × 20g", "12g × 20g?"), ("250g + 5", "250g + 5?"), ("5 + 250g", "5 + 250g?"), ("5 / 0", "divide by zero"),
+            ("(1 + 2", "a bracket is open"), ("1 + 2)", "a bracket closes that never opened"), ("rnt * 4", "unknown word: rnt"),
+            ("mute + 1", "mute: the game won't say"), ("broken", "broken: the game won't say"), ("2 3", "can't read '3' there"),
+            ("1 +", "the sum ends early"), ("sqrt(1g)", "sqrt(1g)?"), ("5 ç", "can't read 'ç'"), ("[Silk Cloth]", "the game won't say about [Silk Cloth]"),
+            ("vendor([Silk Cloth])", "the game won't say about [Silk Cloth]"), ("vendor(5)", "vendor needs an item link, like vendor([Linen Cloth])"),
+            ("min(1g, 2)", "min mixes gold and numbers"), ("sqrt 2", "sqrt needs brackets: sqrt(...)"), ("min()", "min needs numbers"),
+            ("12g 5g", "two gs in one amount"), ("1g%", "1g%?"), ("2^1g", "2 ^ 1g?"), ("1/0%", "divide by zero"), ("sqrt(-1)", "sqrt of a negative number"),
+            ("round(1, 2, 3)", "round takes a number, and how many places"), ("round(1, 1g)", "round's places must be a small whole number"),
+            ("of 3", "can't read 'of' there"), ("x", "can't read 'x' there"), ("ans", "nothing above to answer"), ("total", "nothing above to add"),
+            ("", "Type a sum, like 12g 50s * 20."), ("   ", "Type a sum, like 12g 50s * 20."), (".", "can't read '.'"), ("5 # 2", "can't read '#'"),
+            ("10^400", "too big"),
+        ]:
+            self.assertEqual(self.error(text), err, text)
+
+    def test_the_games_own_words_when_the_stub_has_them(self):
+        self.assertEqual(self.answer("level", None)[0], "34")   # UnitLevel is in the game stub
+        self.assertEqual(self.error("gold", None), "gold: the game won't say")   # GetMoney isn't
+        self.assertEqual(self.error("[Linen Cloth]", None), "the game won't say about [Linen Cloth]")
+        names = {w[1] for w in L.eval("FA.Napkin.WORDS").values()}
+        for word in L.eval("FA.Napkin.values").keys():
+            self.assertIn(word, names, f"{word} isn't in /napkin words")
+
+    def pad(self, lines, icons=False):
+        rows = L.eval("function(lines, icons) return FA.Napkin.Pad(lines, { values = WORDS, item = ENV.item, vendor = ENV.vendor, stack = ENV.stack, icons = icons }) end")(
+            L.lua.table_from(lines), icons)
+        return [(r.text, r.err, r.read) for r in rows.values()]
+
+    def test_the_pad(self):
+        rows = self.pad(["rent = 12g 50s", "rent × 4", "ans / 2", "total", "", "pct = 5%", "total", "gold - rent", "2 x 3", "x = 7", "2 x",
+                         "y =", "1 + ", "level = 3", "pi = 3", "ans", "total"])
+        self.assertEqual([r[0] for r in rows[:4]], ["12g 50s", "50g", "25g", "87g 50s"])
+        self.assertEqual(rows[4], (None, None, None))
+        self.assertEqual(rows[5][0], "5%")
+        self.assertEqual(rows[6][0], "175g")
+        self.assertEqual(rows[7], ("1,225g", None, "1,237g 50s - 12g 50s"))
+        self.assertEqual(rows[8][0], "6")
+        self.assertEqual(rows[9][0], "7")
+        self.assertEqual(rows[10][0], "14")
+        self.assertEqual(rows[11][1], "y = what?")
+        self.assertEqual(rows[12][1], "the sum ends early")
+        self.assertEqual(rows[13][1], "level is the game's word")
+        self.assertEqual(rows[14][1], "pi is taken")
+        self.assertEqual(rows[15][0], "14")
+        self.assertEqual(rows[16][1], "total mixes gold and numbers")
+
+    def test_ans_and_total_skip_what_has_no_answer(self):
+        rows = self.pad(["10", "", "1 +", "ans", "total", "25%", "total"])
+        self.assertEqual([r[0] for r in rows], ["10", None, None, "10", "20", "25%", "40"])
+
+    def test_coin_icons_when_the_game_draws_them(self):
+        L.run("GetCoinTextureString = function(c) return 'coins:' .. c end")
+        try:
+            self.assertEqual(self.pad(["12g 50s"], icons=True)[0][0], "coins:125000")
+            self.assertEqual(self.pad(["-1g"], icons=True)[0][0], "-coins:10000")
+            self.assertEqual(self.answer("12g 50s")[0], "12g 50s")   # chat keeps the letters
+        finally:
+            L.run("GetCoinTextureString = nil")
+
+    def test_names(self):
+        taken = L.eval("function(n) return FA.Napkin.NameTaken(n, ENV) end")
+        self.assertEqual(taken("Level"), "Level is the game's word")
+        self.assertEqual(taken("total"), "total is taken")
+        self.assertEqual(taken("vendor"), "vendor is taken")
+        self.assertIsNone(taken("rent"))
+
+
 UI_STUB = r"""
 -- Any frame: every method answers a new frame, except the few whose answers get used as numbers, text or flags.
-local ANSWERS = { GetFrameLevel = 1, IsShown = true, GetWidth = 400, GetText = "", GetChecked = true, GetID = 1 }
+local ANSWERS = { GetFrameLevel = 1, IsShown = true, GetWidth = 400, GetHeight = 300, GetChecked = true, GetID = 1,
+  GetCursorPosition = 0, GetLeft = 100, GetBottom = 100, GetStringWidth = 60, GetScale = 1 }
 SHOWN, POPUPS, HOOKS = {}, {}, {}
 local function frame(name)
   local f = { name = name }
   return setmetatable(f, { __index = function(t, k)
     if ANSWERS[k] ~= nil then return function() return ANSWERS[k] end end
     if k == "SetText" then return function(self, text) rawset(self, "text", text) end end
+    if k == "GetText" then return function(self) return rawget(self, "text") or "" end end
+    if k == "GetFont" then return function() return "font", 12, "" end end
+    if k == "IsVisible" then return function(self) return rawget(self, "shown") ~= false end end
     if k == "Enable" then return function(self) rawset(self, "enabled", true) end end
     if k == "Disable" then return function(self) rawset(self, "enabled", false) end end
     if k == "Show" then return function(self) rawset(self, "shown", true) end end
@@ -668,6 +827,7 @@ local function frame(name)
 end
 CreateFrame = function(kind, name) local f = frame(name); if name then _G[name] = f end return f end
 UIParent, GameTooltip, ChatFontNormal = frame("UIParent"), frame("GameTooltip"), frame()
+GameFontNormal, GameFontHighlight, GameFontHighlightSmall, GameFontDisableSmall, GameFontNormalLarge = frame(), frame(), frame(), frame(), frame()
 UISpecialFrames = {}
 tinsert = table.insert
 hooksecurefunc = function(a, b, c) HOOKS[#HOOKS + 1] = c or b end
