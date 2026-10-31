@@ -7,6 +7,9 @@ manual-changelog:
 
 ignore:
   - test
+  - docs
+  - art
   - scripts
+  - tools
   - README.md
   - .venv

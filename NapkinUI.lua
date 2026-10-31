@@ -234,7 +234,9 @@ end
 --[[ ---- the window ---- ]]
 local function savePlace()
   local db = FA.db.napkin
-  db.x, db.y, db.w, db.h = win:GetLeft(), win:GetBottom(), win:GetWidth(), win:GetHeight()
+  local x, y, w, h = tonumber(win:GetLeft()), tonumber(win:GetBottom()), tonumber(win:GetWidth()), tonumber(win:GetHeight())
+  if x and y then db.x, db.y = x, y end
+  if w and h then db.w, db.h = w, h end
 end
 local function restorePlace()
   local db = FA.db.napkin
@@ -249,7 +251,7 @@ end
 local function layout()
   if not win then return end
   local db = FA.db.napkin
-  local w, h = win:GetWidth(), win:GetHeight()
+  local w, h = tonumber(win:GetWidth()) or DEFAULT_W, tonumber(win:GetHeight()) or DEFAULT_H   -- a client that won't say gets the default
   local innerH = h - TITLE_H - FOOT_H - PAD
   local keyW = 0
   if db.keys ~= false then
