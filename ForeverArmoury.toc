@@ -22,3 +22,5 @@ GearUI.lua
 LegacyCode.lua
 Legacy.lua
 LegacyUI.lua
+Napkin.lua
+NapkinUI.lua

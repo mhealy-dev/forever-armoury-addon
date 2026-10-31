@@ -14,10 +14,13 @@
        LegacyCode.lua  a Legacy plan code as the site writes it, read and written (FA.LegacyCode)
        Legacy.lua      the account's Legacy plans, where it is on one, and what Apply buys in the three Legacy trees (FA.Legacy)
        LegacyUI.lua    the strip and the panel beside the game's Legacy window listing them
+       Napkin.lua      a sum as a person scribbles it, read and answered (FA.Napkin)
+       NapkinUI.lua    the Napkin window: the pad, the keys, the key binding, the money boxes
 
      Saved variables: ForeverArmouryDB for the account (every build and gear route, by class, every Legacy plan, whether the Legacy panel's plan list is open, the parts' switches, and shown, whether each part's panel is out or put away)
      and ForeverArmouryCharDB for the character (which build it follows, whether the panel's build list is open, and the
-     spec it chose for its gear route). Besides the parts' switches the account has strip, where the strips start and how big their icons are. ]]
+     spec it chose for its gear route). Besides the parts' switches the account has strip, where the strips start and how big their icons are, and napkin, the
+     Napkin window's place and size; the character's napkin holds its pad's lines. ]]
 
 local ADDON, FA = ...
 _G.ForeverArmoury = FA
@@ -25,6 +28,11 @@ _G.ForeverArmoury = FA
 local meta = C_AddOns and C_AddOns.GetAddOnMetadata or GetAddOnMetadata
 FA.VERSION = meta and meta(ADDON, "Version") or "dev"
 if FA.VERSION:find("^@") then FA.VERSION = "dev" end   -- a checkout, not a package: @project-version@ unfilled
+
+--[[ The key binding's names (Bindings.xml), as the game's key bindings window shows them: plain globals, that is
+     how the game names a binding. ]]
+BINDING_HEADER_FOREVERARMOURY = "Forever Armoury"
+BINDING_NAME_FOREVERARMOURY_NAPKIN = "Open the Napkin"
 
 --[[ Point n of a build is taken at level n + FA.FirstLevel() - 1. The site's builds start at level 10, FIRST_LEVEL;
      the Legacy perk Talented (forever-armoury#512) moves the first point a level earlier for each rank, so the
@@ -57,19 +65,20 @@ function FA.TalentedRank(build)
 end
 function FA.FirstLevel(build) return FA.FIRST_LEVEL - (FA.TalentedRank(build)) end
 
---[[ The addon's parts, each with its own switch (FA.PartOn). The level plan and the leveling gear are the first;
+--[[ The addon's parts, each with its own switch (FA.PartOn). The level plan, the leveling gear, the Legacy plans and the Napkin are the first;
      BIS lists, macros and the UI layout may follow. A part that is off draws nothing and hooks nothing it can avoid. ]]
 FA.PARTS = {
   { key = "plan", name = "Level plan", panel = "the level plan", text = "Your builds beside the talent window, with the next talent to take" },
   { key = "gear", name = "Leveling gear", panel = "the leveling gear", text = "The site's gear route beside the character window: the pieces to get at your level, and where" },
   { key = "legacy", name = "Legacy plans", panel = "the Legacy plan", text = "The site's Legacy plan beside the Legacy window: a strip of its ranks, the perks still to buy, and Apply buying them" },
+  { key = "napkin", name = "Napkin", panel = "the Napkin", text = "A small calculator with a scratch pad: gold, percentages, your character's own numbers" },
 }
 
 --[[ Where the strips beside the talent window and the Legacy window start their view: the points taken above the next, and the points coming kept in
      view after it. And the size of its icons, in pixels. ]]
 FA.STRIP_MAX = { past = 5, coming = 8 }
 FA.STRIP_SIZE = { min = 34, max = 56 }
-local DEFAULTS = { builds = {}, gear = {}, legacy = {}, nextId = 1, parts = { plan = true, gear = true, legacy = true }, shown = { plan = true, gear = true, legacy = true }, strip = { past = 3, coming = 5, size = 44 } }
+local DEFAULTS = { builds = {}, gear = {}, legacy = {}, nextId = 1, parts = { plan = true, gear = true, legacy = true, napkin = true }, shown = { plan = true, gear = true, legacy = true }, strip = { past = 3, coming = 5, size = 44 } }
 
 function FA.Print(text)
   (DEFAULT_CHAT_FRAME or ChatFrame1):AddMessage("|cffffd100Forever Armoury:|r " .. tostring(text))
@@ -98,8 +107,21 @@ function FA.Init()
   for key, on in pairs(DEFAULTS.shown) do if db.shown[key] == nil then db.shown[key] = on end end
   if type(db.strip) ~= "table" then db.strip = {} end
   for key, n in pairs(DEFAULTS.strip) do if type(db.strip[key]) ~= "number" then db.strip[key] = n end end
+  --[[ The Napkin window is the account's (its place, its size, whether the keys show); its lines are the
+       character's: a list of strings, never empty, never past the pad's limit. ]]
+  if type(db.napkin) ~= "table" then db.napkin = {} end
+  if db.napkin.keys == nil then db.napkin.keys = true end
   ForeverArmouryCharDB = ForeverArmouryCharDB or {}
-  FA.db, FA.char = db, ForeverArmouryCharDB
+  local char = ForeverArmouryCharDB
+  if type(char.napkin) ~= "table" then char.napkin = {} end
+  local lines, kept = char.napkin.lines, {}
+  local most = FA.Napkin and FA.Napkin.MAX_LINES or 60
+  if type(lines) == "table" then
+    for _, line in ipairs(lines) do if type(line) == "string" and #kept < most then kept[#kept + 1] = line end end
+  end
+  if #kept == 0 then kept[1] = "" end
+  char.napkin.lines = kept
+  FA.db, FA.char = db, char
   FA.SetClass()   -- not at PLAYER_LOGIN: an import before it needs the class
   if FA.RepairBuilds then
     local dropped, repaired = FA.RepairBuilds()
@@ -143,6 +165,7 @@ function FA.RefreshAll()
   if FA.Refresh then FA.Refresh() end
   if FA.RefreshGear then FA.RefreshGear() end
   if FA.RefreshLegacy then FA.RefreshLegacy() end
+  if FA.RefreshNapkin then FA.RefreshNapkin() end
 end
 
 --[[ A part on or off. Turning one on brings its panel back if it was put away, so a switch (the options page, /fa gear on)
@@ -237,7 +260,13 @@ function FA.WindowButton(key, window)
   return ok and button or nil
 end
 
---[[ /fa: the panel, the import box, the switches. ]]
+--[[ A sum answered in chat, or why it couldn't be. ]]
+function FA.NapkinSay(text)
+  local said, err = FA.Napkin.Say(text)
+  FA.Print(said and ("Napkin: " .. said) or err)
+end
+
+--[[ /fa: the panel, the import box, the switches, the Napkin. ]]
 local HELP = {
   "/fa  the talent window with your builds beside it",
   "/fa import  paste a build code from the site",
@@ -249,6 +278,8 @@ local HELP = {
   "/fa gear on|off  the leveling gear part",
   "/fa legacy  the Legacy window with your Legacy plan beside it",
   "/fa legacy on|off  the Legacy plans part",
+  "/fa calc [sum]  the Napkin, a small calculator with a scratch pad; with a sum, its answer in chat",
+  "/fa napkin on|off  the Napkin part",
   "/fa options  the addon's settings",
   "/fa debug  every talent by tree, row and column, as the addon reads them from the game's positions",
   "/fa debug nodes  every node of your talent trees as the game gives it, and the tree the addon put it in",
@@ -289,6 +320,14 @@ SlashCmdList.FOREVERARMOURY = function(msg)
     elseif on == "off" then FA.SetPart("legacy", false); FA.Print("Legacy plans off.")
     elseif not FA.PartOn("legacy") then FA.Print("The Legacy plans part is off. /fa legacy on turns it on.")
     elseif FA.ToggleLegacy then FA.ToggleLegacy() end
+  elseif cmd == "calc" and rest == "" then
+    if FA.OpenNapkin then FA.OpenNapkin() end
+  elseif cmd == "napkin" and (rest == "" or rest:lower() == "on" or rest:lower() == "off") then
+    local on = rest:lower()
+    if on == "on" then FA.SetPart("napkin", true) elseif on == "off" then FA.SetPart("napkin", false) else FA.SetPart("napkin", not FA.PartOn("napkin")) end
+    FA.Print("Napkin " .. (FA.PartOn("napkin") and "on" or "off") .. ".")
+  elseif cmd == "calc" or cmd == "napkin" then   -- with a sum: its answer in chat
+    FA.NapkinSay(rest)
   elseif cmd == "options" or cmd == "settings" then
     if FA.OpenOptions then FA.OpenOptions() end
   elseif cmd == "debug" and rest:lower() == "nodes" then
@@ -304,6 +343,23 @@ SlashCmdList.FOREVERARMOURY = function(msg)
   else
     FA.Print("Forever Armoury " .. FA.VERSION)
     for _, line in ipairs(HELP) do FA.Print(line) end
+  end
+end
+
+--[[ /napkin: the window on its own, a sum answered in chat, the pad wiped, the words the sums know. ]]
+SLASH_FOREVERNAPKIN1 = "/napkin"
+SlashCmdList.FOREVERNAPKIN = function(msg)
+  local text = (msg or ""):match("^%s*(.-)%s*$")
+  local word = text:lower()
+  if word == "" then
+    if FA.ToggleNapkin then FA.ToggleNapkin() end
+  elseif word == "clear" then
+    if FA.ClearNapkin then FA.ClearNapkin() end
+  elseif word == "words" then
+    FA.Print("The Napkin's words:")
+    for _, w in ipairs(FA.Napkin.WORDS) do FA.Print(w[1] .. ": " .. w[2]) end
+  else
+    FA.NapkinSay(text)
   end
 end
 
@@ -347,7 +403,8 @@ function FA.RefreshSoon()
 end
 
 --[[ Events: the saved variables once this addon has loaded, the talent window once Blizzard's talent UI has (it
-     loads on demand), and the character's points, level and combat as they change. A name the game doesn't know is
+     loads on demand), the Napkin's money boxes once the auction house has, and the character's points, level and combat
+     as they change. A name the game doesn't know is
      said in chat, since registering it fails without a word. ]]
 local EVENTS = { "PLAYER_LEVEL_UP", "PLAYER_TALENT_UPDATE", "TRAIT_NODE_CHANGED", "TRAIT_CONFIG_UPDATED",
   "ACTIVE_TALENT_GROUP_CHANGED", "ACTIVE_COMBAT_CONFIG_CHANGED", "CHARACTER_POINTS_CHANGED", "CONFIG_COMMIT_FAILED",
@@ -358,6 +415,8 @@ events:RegisterEvent("PLAYER_LOGIN")
 events:SetScript("OnEvent", function(_, event, arg1)
   if event == "ADDON_LOADED" then
     if arg1 == ADDON then FA.Init()
+    elseif arg1 == "Blizzard_AuctionUI" or arg1 == "Blizzard_AuctionHouseUI" then
+      if FA.HookMoneyFrames then FA.HookMoneyFrames() end
     elseif FA.Talents.Loaded(arg1) and FA.HookTalentFrame then FA.HookTalentFrame()
     elseif FA.Legacy.Loaded(arg1) and FA.HookLegacyFrame then FA.HookLegacyFrame() end
   elseif event == "PLAYER_LOGIN" then
@@ -369,6 +428,7 @@ events:SetScript("OnEvent", function(_, event, arg1)
     if FA.HookCharacterFrame then FA.HookCharacterFrame() end
     if FA.HookLegacyFrame then FA.HookLegacyFrame() end
     if FA.SetupOptions then FA.SetupOptions() end
+    if FA.HookMoneyFrames then FA.HookMoneyFrames() end
   elseif event == "CONFIG_COMMIT_FAILED" then
     --[[ The commit is a cast, so the game can turn it down after CommitConfig said yes: what the addon staged is
          rolled back here. A commit of the window's own is the window's to report. ]]

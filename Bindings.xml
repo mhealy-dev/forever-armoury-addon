@@ -1,0 +1,5 @@
+<Bindings>
+  <Binding name="FOREVERARMOURY_NAPKIN" category="ADDONS" header="FOREVERARMOURY">
+    ForeverArmoury.ToggleNapkin()
+  </Binding>
+</Bindings>
