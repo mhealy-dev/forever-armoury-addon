@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0 (unreleased)
+
+- **Napkin**: a small calculator with a scratch pad, in a resizable window with a keypad: gold, percentages, your character's own numbers and item links. Answers go to chat or into the mail, trade and auction money boxes. `/napkin`, `/fa calc`, a key binding, and the part's switch.
+
 ## 0.3.0 (unreleased)
 
 Fixes before the first release (forever-armoury #1535):

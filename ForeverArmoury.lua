@@ -6,9 +6,11 @@
        Talents.lua     the game's talents as three trees of cells, and its talent window (FA.Talents)
        Builds.lua      the saved builds, the character's active one, and where it is on it (FA.Progress)
        TalentUI.lua    the panel beside the talent window, the next-talent highlight, the import box, the settings
+       Napkin.lua      a sum as a person scribbles it, read and answered (FA.Napkin)
+       NapkinUI.lua    the Napkin window: the pad, the keys, the key binding, the money boxes
 
-     Saved variables: ForeverArmouryDB for the account (every build, by class, and the parts' switches) and
-     ForeverArmouryCharDB for the character (which build it follows). ]]
+     Saved variables: ForeverArmouryDB for the account (every build, by class, the parts' switches and the Napkin
+     window's place) and ForeverArmouryCharDB for the character (which build it follows, its Napkin's lines). ]]
 
 local ADDON, FA = ...
 _G.ForeverArmoury = FA
@@ -16,6 +18,11 @@ _G.ForeverArmoury = FA
 local meta = C_AddOns and C_AddOns.GetAddOnMetadata or GetAddOnMetadata
 FA.VERSION = meta and meta(ADDON, "Version") or "dev"
 if FA.VERSION:find("^@") then FA.VERSION = "dev" end   -- a checkout, not a package: @project-version@ unfilled
+
+--[[ The key binding's names (Bindings.xml), as the game's key bindings window shows them: plain globals, that is
+     how the game names a binding. ]]
+BINDING_HEADER_FOREVERARMOURY = "Forever Armoury"
+BINDING_NAME_FOREVERARMOURY_NAPKIN = "Open the Napkin"
 
 --[[ Point n of a build is taken at level n + FA.FirstLevel() - 1. The site's builds start at level 10, FIRST_LEVEL;
      the Legacy perk Talented (forever-armoury#512) moves the first point a level earlier for each rank, so the
@@ -36,13 +43,14 @@ function FA.TalentedRank()
 end
 function FA.FirstLevel() return FA.FIRST_LEVEL - FA.TalentedRank() end
 
---[[ The addon's parts, each with its own switch (FA.PartOn). The level plan is the first; macros and the UI layout
-     may follow. A part that is off draws nothing and hooks nothing it can avoid. ]]
+--[[ The addon's parts, each with its own switch (FA.PartOn). The level plan is the first, the Napkin the second;
+     macros and the UI layout may follow. A part that is off draws nothing and hooks nothing it can avoid. ]]
 FA.PARTS = {
   { key = "plan", name = "Level plan", text = "Your builds beside the talent window, with the next talent to take" },
+  { key = "napkin", name = "Napkin", text = "A small calculator with a scratch pad: gold, percentages, your character's own numbers" },
 }
 
-local DEFAULTS = { builds = {}, nextId = 1, parts = { plan = true } }
+local DEFAULTS = { builds = {}, nextId = 1, parts = { plan = true, napkin = true } }
 
 function FA.Print(text)
   (DEFAULT_CHAT_FRAME or ChatFrame1):AddMessage("|cffffd100Forever Armoury:|r " .. tostring(text))
@@ -56,17 +64,37 @@ function FA.Init()
   if type(db.nextId) ~= "number" then db.nextId = DEFAULTS.nextId end
   if type(db.parts) ~= "table" then db.parts = {} end
   for key, on in pairs(DEFAULTS.parts) do if db.parts[key] == nil then db.parts[key] = on end end
+  --[[ The Napkin window is the account's (its place, its size, whether the keys show); its lines are the
+       character's: a list of strings, never empty, never past the pad's limit. ]]
+  if type(db.napkin) ~= "table" then db.napkin = {} end
+  if db.napkin.keys == nil then db.napkin.keys = true end
   ForeverArmouryCharDB = ForeverArmouryCharDB or {}
-  FA.db, FA.char = db, ForeverArmouryCharDB
+  local char = ForeverArmouryCharDB
+  if type(char.napkin) ~= "table" then char.napkin = {} end
+  local lines, kept = char.napkin.lines, {}
+  local most = FA.Napkin and FA.Napkin.MAX_LINES or 60
+  if type(lines) == "table" then
+    for _, line in ipairs(lines) do if type(line) == "string" and #kept < most then kept[#kept + 1] = line end end
+  end
+  if #kept == 0 then kept[1] = "" end
+  char.napkin.lines = kept
+  FA.db, FA.char = db, char
 end
 
 function FA.PartOn(key) return FA.db and FA.db.parts[key] ~= false end
 function FA.SetPart(key, on)
   FA.db.parts[key] = on and true or false
   if FA.Refresh then FA.Refresh() end
+  if FA.RefreshNapkin then FA.RefreshNapkin() end
 end
 
---[[ /fa: the panel, the import box, the switches. ]]
+--[[ A sum answered in chat, or why it couldn't be. ]]
+function FA.NapkinSay(text)
+  local said, err = FA.Napkin.Say(text)
+  FA.Print(said and ("Napkin: " .. said) or err)
+end
+
+--[[ /fa: the panel, the import box, the switches, the Napkin. ]]
 local HELP = {
   "/fa  the talent window with your builds beside it",
   "/fa import  paste a build code from the site",
@@ -74,6 +102,8 @@ local HELP = {
   "/fa export  the code for every build of your class, to paste into the site",
   "/fa list  your builds for this class",
   "/fa plan on|off  the level plan part",
+  "/fa calc [sum]  the Napkin, a small calculator with a scratch pad; with a sum, its answer in chat",
+  "/fa napkin on|off  the Napkin part",
   "/fa options  the addon's settings",
   "/fa debug  every talent by tree, row and column, as the addon reads them from the game's positions",
 }
@@ -101,6 +131,14 @@ SlashCmdList.FOREVERARMOURY = function(msg)
     local on = rest:lower()
     if on == "on" then FA.SetPart("plan", true) elseif on == "off" then FA.SetPart("plan", false) else FA.SetPart("plan", not FA.PartOn("plan")) end
     FA.Print("Level plan " .. (FA.PartOn("plan") and "on" or "off") .. ".")
+  elseif cmd == "calc" and rest == "" then
+    if FA.OpenNapkin then FA.OpenNapkin() end
+  elseif cmd == "napkin" and (rest == "" or rest:lower() == "on" or rest:lower() == "off") then
+    local on = rest:lower()
+    if on == "on" then FA.SetPart("napkin", true) elseif on == "off" then FA.SetPart("napkin", false) else FA.SetPart("napkin", not FA.PartOn("napkin")) end
+    FA.Print("Napkin " .. (FA.PartOn("napkin") and "on" or "off") .. ".")
+  elseif cmd == "calc" or cmd == "napkin" then   -- with a sum: its answer in chat
+    FA.NapkinSay(rest)
   elseif cmd == "options" or cmd == "settings" then
     if FA.OpenOptions then FA.OpenOptions() end
   elseif cmd == "debug" then
@@ -112,14 +150,34 @@ SlashCmdList.FOREVERARMOURY = function(msg)
   end
 end
 
+--[[ /napkin: the window on its own, a sum answered in chat, the pad wiped, the words the sums know. ]]
+SLASH_FOREVERNAPKIN1 = "/napkin"
+SlashCmdList.FOREVERNAPKIN = function(msg)
+  local text = (msg or ""):match("^%s*(.-)%s*$")
+  local word = text:lower()
+  if word == "" then
+    if FA.ToggleNapkin then FA.ToggleNapkin() end
+  elseif word == "clear" then
+    if FA.ClearNapkin then FA.ClearNapkin() end
+  elseif word == "words" then
+    FA.Print("The Napkin's words:")
+    for _, w in ipairs(FA.Napkin.WORDS) do FA.Print(w[1] .. ": " .. w[2]) end
+  else
+    FA.NapkinSay(text)
+  end
+end
+
 --[[ Events: the saved variables once this addon has loaded, the talent window once Blizzard's talent UI has (it
-     loads on demand), and the character's points and level as they change. ]]
+     loads on demand), the Napkin's money boxes once the auction house has, and the character's points and level as
+     they change. ]]
 local events = CreateFrame("Frame")
 events:RegisterEvent("ADDON_LOADED")
 events:RegisterEvent("PLAYER_LOGIN")
 events:SetScript("OnEvent", function(_, event, arg1)
   if event == "ADDON_LOADED" then
     if arg1 == ADDON then FA.Init()
+    elseif arg1 == "Blizzard_AuctionUI" or arg1 == "Blizzard_AuctionHouseUI" then
+      if FA.HookMoneyFrames then FA.HookMoneyFrames() end
     elseif FA.Talents.Loaded(arg1) and FA.HookTalentFrame then FA.HookTalentFrame() end
   elseif event == "PLAYER_LOGIN" then
     FA.class = (select(2, UnitClass("player")) or ""):lower()   -- "warrior", as the site names it
@@ -129,6 +187,7 @@ events:SetScript("OnEvent", function(_, event, arg1)
     end
     if FA.HookTalentFrame then FA.HookTalentFrame() end
     if FA.SetupOptions then FA.SetupOptions() end
+    if FA.HookMoneyFrames then FA.HookMoneyFrames() end
   elseif event == "CONFIG_COMMIT_FAILED" then
     --[[ The commit is a cast, so the game can turn it down after CommitConfig said yes: what the addon staged is
          rolled back here. A commit of the window's own is the window's to report. ]]

@@ -910,6 +910,160 @@ class UI(unittest.TestCase):
             L.eval("function(c) SlashCmdList.FOREVERARMOURY(c) end")(cmd)
 
 
+class NapkinUI(unittest.TestCase):
+    """NapkinUI.lua against the frame mock: the window drawn, resized and driven through its handlers (Napkin.ui),
+    since the mock keeps no scripts."""
+
+    @classmethod
+    def setUpClass(cls):
+        L.run("RESET('traits')")
+        L.run(UI_STUB)
+        L.run(NAPKIN_STUB)
+        L.run("""
+          local f = assert(io.open(ROOT .. '/NapkinUI.lua', 'rb')); local src = f:read('*a'); f:close()
+          assert((loadstring or load)(src, '@NapkinUI.lua'))('ForeverArmoury', FA)
+        """)
+
+    def setUp(self):
+        L.run("RESET('traits'); PRINTED = ''; CHAT = nil; SET = nil; FA.OpenNapkin()")
+
+    def state(self):
+        return L.eval("FA.Napkin.ui.State()")
+
+    def lines(self):
+        return list(L.eval("FA.char.napkin.lines").values())
+
+    def typed(self, row, text):
+        L.eval("function(i, t) FA.Napkin.ui.Typed(FA.Napkin.ui.Row(i), t, true) end")(row, text)
+
+    def answer(self, row):
+        return L.eval("function(i) return FA.Napkin.ui.Row(i).ans.text.text end")(row)
+
+    def test_open_draws_the_rows_and_keys_for_the_size(self):
+        s = self.state()
+        self.assertEqual((s.visible, s.offset, s.lastLine, s.keyW), (9, 0, 1, 38))   # 400 by 300: nine rows, 38 pixel keys
+        self.assertEqual(self.lines(), [""])
+        self.assertTrue(L.eval("ForeverArmouryNapkin.shown"))
+
+    def test_typing_answers_as_you_go(self):
+        self.typed(1, "12g 50s * 20")
+        self.assertEqual(self.answer(1), "250g")
+        self.assertEqual(self.lines(), ["12g 50s * 20"])
+        self.typed(1, "12g * 20g")
+        self.assertEqual(self.answer(1), "12g × 20g?")
+        self.typed(1, "")
+        self.assertEqual(self.answer(1), "")
+
+    def test_enter_adds_rows_and_the_pad_scrolls(self):
+        enter = L.eval("function(i) FA.Napkin.ui.Enter(FA.Napkin.ui.Row(i)) end")
+        self.typed(1, "rent = 12g 50s")
+        enter(1)
+        self.assertEqual((self.state().lastLine, len(self.lines())), (2, 2))
+        self.typed(2, "rent * 4")
+        self.assertEqual(self.answer(2), "50g")
+        for i in range(2, 13):
+            enter(min(i, 9))
+        self.assertEqual(len(self.lines()), 13)
+        s = self.state()
+        self.assertEqual((s.lastLine, s.offset), (13, 4))   # nine rows show lines 5 to 13
+        self.assertEqual(L.eval("FA.Napkin.ui.Row(1).box.text"), "")
+        L.run("FA.Napkin.ui.Scroll(1)")
+        self.assertEqual(self.state().offset, 3)
+        L.run("FA.Napkin.ui.Focus(1)")
+        self.assertEqual((self.state().offset, L.eval("FA.Napkin.ui.Row(1).box.text")), (0, "rent = 12g 50s"))
+        L.run("FA.Napkin.ui.Move(FA.Napkin.ui.Row(1), 1)")
+        self.assertEqual(self.state().lastLine, 2)
+        self.assertEqual(self.answer(2), "50g")
+        L.run("FA.Napkin.ui.Move(FA.Napkin.ui.Row(2), -5)")
+        self.assertEqual(self.state().lastLine, 1)
+
+    def test_backspace_on_an_empty_row_removes_it(self):
+        L.run("FA.char.napkin.lines = { '1', '', '3' }; FA.Napkin.ui.Layout()")
+        L.run("FA.Napkin.ui.Remove(FA.Napkin.ui.Row(2))")
+        self.assertEqual((self.lines(), self.state().lastLine), (["1", "3"], 1))
+        L.run("FA.Napkin.ui.Remove(FA.Napkin.ui.Row(1)); FA.Napkin.ui.Remove(FA.Napkin.ui.Row(1))")
+        self.assertEqual(self.lines(), ["3"])   # the last row stays
+
+    def test_the_keys_type_into_the_row(self):
+        key = L.eval("function(k) return FA.Napkin.ui.Key(k) end")
+        self.assertEqual([key(k) for k in ["7", "×", "g", "(", "pi", "÷", "+", "-"]], ["7", " * ", "g", "(", "pi", " / ", " + ", " - "])
+        self.assertEqual(key("="), "\n")
+        self.assertEqual(len(self.lines()), 2)
+        self.typed(2, "2+2")
+        self.assertEqual(key("C"), "")
+        self.assertEqual(self.lines()[1], "")
+        self.assertEqual(key("<<"), "<<")   # the cursor is at 0 in the mock: nothing to take back
+
+    def test_copy_chat_and_tooltip(self):
+        self.typed(1, "1250g / 5")
+        self.assertEqual(L.eval("FA.Napkin.ui.Copy(FA.Napkin.ui.Row(1))"), "250g")
+        self.assertEqual(L.eval("ForeverArmouryNapkin.copy.text"), "250g")
+        L.run("ChatEdit_InsertLink = function(t) CHAT = t; return true end")
+        self.assertEqual(L.eval("FA.Napkin.ui.ToChat(FA.Napkin.ui.Row(1))"), "250g")
+        self.assertEqual(L.eval("CHAT"), "250g")
+        L.run("ChatEdit_InsertLink = nil")
+        L.run("FA.Napkin.ui.Tooltip(FA.Napkin.ui.Row(1), FA.Napkin.ui.Row(1).ans)")
+        self.assertEqual(L.eval("GameTooltip.text"), "1,250g ÷ 5")
+        self.assertIsNone(L.eval("FA.Napkin.ui.Copy(FA.Napkin.ui.Row(2))"))   # nothing there
+
+    def test_use_puts_a_money_answer_into_the_last_money_box(self):
+        L.run("""
+          SendMailMoney = CreateFrame('Frame', 'SendMailMoney'); SendMailMoneyGold = CreateFrame('EditBox', 'SendMailMoneyGold')
+          MoneyInputFrame_SetCopper = function(f, c) SET = { f = f.name, c = c } end
+          HOOKS = {}; FA.HookMoneyFrames(); FA.HookMoneyFrames()
+        """)
+        self.assertEqual(L.eval("#HOOKS"), 1)   # hooked once, the gold box (the silver and copper ones aren't in the mock)
+        self.typed(1, "12g 50s * 20")
+        self.assertIsNone(L.eval("FA.Napkin.ui.Use()"))   # no box clicked yet
+        self.assertFalse(L.eval("ForeverArmouryNapkin.use.enabled"))
+        L.run("HOOKS[1]()")   # the gold box gains focus
+        self.assertEqual(self.state().lastMoney, "SendMailMoney")
+        L.run("FA.Napkin.ui.Typed(FA.Napkin.ui.Row(1), '12g 50s * 20', true)")
+        self.assertTrue(L.eval("ForeverArmouryNapkin.use.enabled"))
+        L.run("FA.Napkin.ui.Use()")
+        self.assertEqual(tuple(L.eval("SET.f, SET.c")), ("SendMailMoney", 2500000))
+        self.typed(1, "40 * 2")
+        self.assertFalse(L.eval("ForeverArmouryNapkin.use.enabled"))   # not money
+        L.run("MoneyInputFrame_SetCopper = nil")
+
+    def test_the_window_resizes_the_keys_and_the_rows(self):
+        L.run("rawset(ForeverArmouryNapkin, 'GetWidth', function() return 800 end); rawset(ForeverArmouryNapkin, 'GetHeight', function() return 600 end); FA.Napkin.ui.Layout()")
+        s = self.state()
+        self.assertEqual((s.keyW, s.visible), (64, 23))   # keys at their largest, 23 rows
+        L.run("FA.db.napkin.keys = false; FA.Napkin.ui.Layout()")
+        self.assertEqual(self.state().keyW, 0)
+        self.assertFalse(L.eval("ForeverArmouryNapkin.keypad.shown"))
+        L.run("FA.db.napkin.keys = true; rawset(ForeverArmouryNapkin, 'GetWidth', nil); rawset(ForeverArmouryNapkin, 'GetHeight', nil); FA.Napkin.ui.Layout()")
+        self.assertEqual((self.state().keyW, self.state().visible), (38, 9))
+
+    def test_the_pad_is_kept_and_clear_wipes_it(self):
+        self.typed(1, "1 + 1")
+        self.assertEqual(L.eval("ForeverArmouryCharDB.napkin.lines[1]"), "1 + 1")
+        L.run("FA.ClearNapkin()")
+        self.assertEqual(self.lines(), [""])
+        self.assertIn("wiped", L.eval("PRINTED"))
+
+    def test_the_part_switch(self):
+        L.run("FA.SetPart('napkin', false)")
+        self.assertFalse(L.eval("ForeverArmouryNapkin.shown"))
+        self.assertFalse(L.eval("FA.OpenNapkin()"))
+        self.assertIn("The Napkin is off", L.eval("PRINTED"))
+        L.run("FA.SetPart('napkin', true); FA.OpenNapkin()")
+        self.assertTrue(L.eval("ForeverArmouryNapkin.shown"))
+        L.run("FA.ToggleNapkin()")   # the mock's IsShown is always true, so Toggle hides
+        self.assertFalse(L.eval("ForeverArmouryNapkin.shown"))
+
+    def test_slash_commands_run(self):
+        for cmd in ["calc", "calc 12g 50s * 20", "napkin off", "napkin on", "napkin", "napkin 2 + 2", "calc nonsense"]:
+            L.eval("function(c) SlashCmdList.FOREVERARMOURY(c) end")(cmd)
+        self.assertIn("Napkin: 12g 50s × 20 = 250g", L.eval("PRINTED"))
+        self.assertIn("unknown word: nonsense", L.eval("PRINTED"))
+        for cmd in ["", "clear", "words", "2 * 3", "WORDS"]:
+            L.eval("function(c) SlashCmdList.FOREVERNAPKIN(c) end")(cmd)
+        self.assertIn("gold: the money you carry", L.eval("PRINTED"))
+        self.assertIn("Napkin: 2 × 3 = 6", L.eval("PRINTED"))
+
+
 if __name__ == "__main__":
     print("Lua runtime:", L.flavour, L.eval("_VERSION"))
     unittest.main(argv=sys.argv[:1], verbosity=1)

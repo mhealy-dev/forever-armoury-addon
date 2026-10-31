@@ -14,3 +14,5 @@ BuildCode.lua
 Talents.lua
 Builds.lua
 TalentUI.lua
+Napkin.lua
+NapkinUI.lua
