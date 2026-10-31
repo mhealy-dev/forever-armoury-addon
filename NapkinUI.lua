@@ -114,15 +114,18 @@ local function bind()
 end
 
 --[[ ---- the handlers ---- ]]
+--[[ The person is typing: an error in the row they're on waits till they've stopped. ]]
+local function touch()
+  typedAt = now()
+  if C_Timer and C_Timer.After then C_Timer.After(ERROR_DELAY + 0.05, function() if win and win:IsShown() then showAnswers() end end) end
+end
+
 function ui.Typed(row, text, user)
   if binding or not row.line or row.line > Napkin.MAX_LINES then return end
   local L = lines()
   while #L < row.line do L[#L + 1] = "" end
   L[row.line] = text
-  if user then
-    typedAt = now()
-    if C_Timer and C_Timer.After then C_Timer.After(ERROR_DELAY + 0.05, function() if win and win:IsShown() then showAnswers() end end) end
-  end
+  if user then touch() end
   recalc()
   showAnswers()
 end
@@ -178,6 +181,7 @@ function ui.Key(label)
     return "<<"
   end
   local typed = TYPES[label] or label
+  touch()   -- Insert's OnTextChanged doesn't count as the person's, so the grace is given here
   row.box:Insert(typed)
   return typed
 end
@@ -388,13 +392,16 @@ local function makeWindow()
   end)
   win.use:SetScript("OnLeave", function() GameTooltip:Hide() end)
   win.use:SetMotionScriptsWhileDisabled(true)
-  win.hint = win:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-  win.hint:SetPoint("LEFT", win.use, "RIGHT", 8, 0)
-  win.hint:SetText("click an answer to copy, shift-click for chat")
   win.live = win:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
   win.live:SetPoint("BOTTOMRIGHT", -PAD - 16, 15)
   win.live:SetJustifyH("RIGHT")
   win.live:SetTextColor(AMBER[1], AMBER[2], AMBER[3])
+  win.hint = win:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  win.hint:SetPoint("LEFT", win.use, "RIGHT", 8, 0)
+  win.hint:SetPoint("RIGHT", win.live, "LEFT", -8, 0)   -- cut short on a narrow window, never over the numbers
+  win.hint:SetJustifyH("LEFT")
+  win.hint:SetWordWrap(false)
+  win.hint:SetText("click an answer to copy, shift-click for chat")
 
   --[[ a one-line box over the hint, where a copied answer sits selected for Ctrl+C ]]
   win.copy = CreateFrame("EditBox", nil, win)
